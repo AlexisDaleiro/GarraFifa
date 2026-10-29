@@ -27,6 +27,7 @@ const SP_LABEL = { kickoff: 'SAQUE INICIAL', free: 'TIRO LIBRE', penalty: '¡PEN
 const SKILL_T = { spin: 28, croq: 14, step: 20 };
 const SKILL_NAME = { spin: 'RULETA', croq: 'CROQUETA', step: 'BICICLETA' };
 const HOLD_T = 240; // ticks que el arquero espera la orden de un humano antes de sacar solo
+const CALL_T = 120, CALL_COOL = 150; // pedido visible por 2 s; evita repetirlo al mantener la tecla
 
 const rooms = new Map();
 
@@ -84,6 +85,7 @@ function makePlayer(room, team, kind, prof, sid) {
     id: room.nextId++, sid: sid || null, team, kind, name: prof.name, num: prof.num,
     x: CX, y: CY, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI, st: 'run', stT: 0, stamina: 100, tired: false,
     sprinting: false, charging: false, charge: 0, queued: null, queuedT: 0, cool: 0, touchCool: 0, boostT: 0, kickT: 0,
+    callT: 0, callCool: 0,
     lastFwdTap: -99, skillX: 0, skillY: 0, spinDir: 1, slideClean: false, lastDir: { x: 0, y: 0 },
     input: 0, pressed: 0, released: 0, aiDir: null, aiHold: 0, home: { x: CX, y: CY },
   };
@@ -155,7 +157,7 @@ function endMatch(room) {
 
 function resetMotion(p) {
   p.vx = p.vy = 0; p.st = 'run'; p.stT = 0; p.charging = false; p.charge = 0;
-  p.queued = null; p.boostT = 0; p.aiHold = 0;
+  p.queued = null; p.boostT = 0; p.aiHold = 0; p.callT = 0; p.callCool = 0;
 }
 
 function kickoff(room, team) {
@@ -181,7 +183,7 @@ function setPiece(room, type, team, x, y) {
   if (type === 'corner') ax = team === 0 ? W - 140 : 140;
   else if (type === 'throw') { ax = x + (team === 0 ? 80 : -80); ay = CY; }
   const ang = Math.atan2(ay - y, ax - x);
-  for (const p of room.players) { p.charging = false; p.charge = 0; p.queued = null; p.aiHold = 0; }
+  for (const p of room.players) { p.charging = false; p.charge = 0; p.queued = null; p.aiHold = 0; p.callT = 0; }
   resetMotion(taker);
   taker.face = ang;
   taker.x = x - Math.cos(ang) * 14;
@@ -213,7 +215,7 @@ function goal(room, team) {
   room.score[team]++;
   b.inNet = true; b.netSide = team === 0 ? 1 : -1; b.owner = null;
   room.state = 'goal'; room.goalT = 420; room.kickTeam = 1 - team; room.sp = null;
-  for (const p of room.players) { p.charging = false; p.charge = 0; p.queued = null; }
+  for (const p of room.players) { p.charging = false; p.charge = 0; p.queued = null; p.callT = 0; }
   const scorer = room.players.find(p => p.id === b.lastPlayer);
   emitEv(room, { type: 'goal', team, scorer: scorer ? scorer.name : '', own: !!scorer && scorer.team !== team, score: room.score });
 }
@@ -245,7 +247,7 @@ function kickBall(room, p, vx, vy, vz, spin) {
   b.owner = null; b.vx = vx; b.vy = vy; b.vz = vz; b.spin = spin || 0;
   b.lastTeam = p.team; b.lastPlayer = p.id;
   room.pass = null;
-  p.touchCool = 14; p.kickT = 10; p.charging = false; p.charge = 0; p.queued = null;
+  p.touchCool = 14; p.kickT = 10; p.charging = false; p.charge = 0; p.queued = null; p.callT = 0;
   emitEv(room, { type: 'kick', p: r1(Math.hypot(vx, vy) + Math.abs(vz)), x: r1(b.x), y: r1(b.y) });
 }
 
@@ -459,9 +461,12 @@ function updatePlayer(room, p) {
   if (p.cool > 0) p.cool--;
   if (p.boostT > 0) p.boostT--;
   if (p.kickT > 0) p.kickT--;
+  if (p.callT > 0) p.callT--;
+  if (p.callCool > 0) p.callCool--;
   if (p.queuedT > 0 && --p.queuedT === 0) p.queued = null;
 
   const hasBall = b.owner === p;
+  if (hasBall) p.callT = 0;
   const moving = d.x !== 0 || d.y !== 0;
 
   // Velocidad + estamina ("Garra")
@@ -551,7 +556,15 @@ function updatePlayer(room, p) {
     if (pr & B.LOB) return doPass(room, p, aim, 'lob');
   } else {
     p.charging = false; p.charge = 0;
-    const q = pr & B.SHOOT ? 'shoot' : pr & B.PASS ? 'pass' : pr & B.THROUGH ? 'through' : pr & B.LOB ? 'lob' : null;
+    const passPressed = pr & (B.PASS | B.THROUGH | B.LOB);
+    if (passPressed && p.sid && p.kind === 'field' && room.state === 'play' && p.callCool === 0) {
+      p.callT = CALL_T; p.callCool = CALL_COOL;
+    }
+    // Pedirla a un compañero no prepara un pase involuntario cuando la recibís.
+    // Se mantiene la jugada de primera si el pase ya viene hacia vos o el balón está al alcance.
+    const firstTouch = !p.sid || (!b.owner && (isReceiver(room, p) || dist(p.x, p.y, b.x, b.y) < 40));
+    if (passPressed && !firstTouch) { p.queued = null; p.queuedT = 0; }
+    const q = pr & B.SHOOT ? 'shoot' : !firstTouch ? null : pr & B.PASS ? 'pass' : pr & B.THROUGH ? 'through' : pr & B.LOB ? 'lob' : null;
     if (q) { p.queued = q; p.queuedT = 18; }
   }
 }
@@ -903,6 +916,7 @@ function step(room) {
   if (g && g.st === 'hold') for (const o of room.players) if (o.team !== g.team) pushOut(o, g.x, g.y, 55);
   updateBall(room);
   if (room.state === 'play') { checkTouches(room); checkSlides(room); }
+  if (room.ball.owner) room.ball.owner.callT = 0;
   if (room.pass && (room.ball.owner || --room.pass.t <= 0)) room.pass = null;
   if (room.timeLeft <= 0 && (room.state === 'play' || room.state === 'setpiece')) endMatch(room);
 }
@@ -914,7 +928,8 @@ function snapshot(room) {
     b: [r1(b.x), r1(b.y), r1(b.z)], o: b.owner ? b.owner.id : 0,
     p: room.players.map(p => [
       p.id, r1(p.x), r1(p.y), Math.round(normAng(p.face) * 100) / 100, ST[p.st], Math.round(p.stamina),
-      Math.round(p.charge * 100), (p.tired ? 1 : 0) | (p.sprinting ? 2 : 0) | (p.kickT > 0 ? 4 : 0) | (p.boostT > 0 ? 8 : 0),
+      Math.round(p.charge * 100), (p.tired ? 1 : 0) | (p.sprinting ? 2 : 0) | (p.kickT > 0 ? 4 : 0) | (p.boostT > 0 ? 8 : 0)
+        | (p.callT > 0 && b.owner !== p && room.state === 'play' ? 16 : 0),
     ]),
   };
   // rp: destinatario del pase en curso · pt: a quién iría el pase del humano con balón (vista previa)
@@ -1106,7 +1121,49 @@ function selfTest() {
     assert.strictEqual(r.ball.owner, mate, `${kind}: el pase no llegó`);
     rooms.delete(r.code);
   }
-  // 5) Partidos completos solo con bots: sin NaN y terminan.
+  // 5) S/W/A sin pelota: pedido compartido, sin pase accidental, con duración y enfriamiento.
+  for (const button of [B.PASS, B.THROUGH, B.LOB]) {
+    const r = newRoom('t', 2, 3);
+    r.state = 'play';
+    const p = makePlayer(r, 0, 'field', cleanProfile({}), 'human');
+    const mate = makePlayer(r, 0, 'field', cleanProfile({}), 'mate');
+    r.players = [p, mate];
+    p.x = 300; mate.x = 550;
+    Object.assign(r.ball, { owner: mate, x: 561, y: CY });
+    p.input = p.pressed = button;
+    updatePlayer(r, p);
+    assert.strictEqual(p.callT, CALL_T, 'no pidió la pelota');
+    assert.strictEqual(p.queued, null, 'pedirla no debe preparar un pase accidental');
+    assert(snapshot(r).p.find(q => q[0] === p.id)[7] & 16, 'el pedido no se transmite a los compañeros');
+    for (let i = 0; i < CALL_T; i++) updatePlayer(r, p);
+    assert.strictEqual(p.callT, 0, 'mantener el botón no debe repetir el pedido');
+    p.pressed = button; updatePlayer(r, p);
+    assert.strictEqual(p.callT, 0, 'el enfriamiento debe impedir repetir el pedido');
+    for (let i = 0; i < CALL_COOL; i++) updatePlayer(r, p);
+    p.pressed = button; updatePlayer(r, p);
+    assert.strictEqual(p.callT, CALL_T, 'debe poder volver a pedirla');
+    r.ball.owner = p; updatePlayer(r, p);
+    assert.strictEqual(p.callT, 0, 'el pedido debe terminar al recibir la pelota');
+    assert.strictEqual(snapshot(r).p[0][7] & 16, 0);
+    p.pressed = button; updatePlayer(r, p);
+    assert.strictEqual(r.ball.owner, null, 'con pelota el botón debe seguir haciendo un pase');
+    assert.strictEqual(p.callT, 0);
+    // El pase de primera sigue disponible cuando la pelota ya viene hacia el jugador.
+    r.ball.owner = null; r.pass = { to: p.id, x: p.x, y: p.y, t: 100 };
+    p.pressed = button; updatePlayer(r, p);
+    assert.strictEqual(p.queued, button === B.PASS ? 'pass' : button === B.THROUGH ? 'through' : 'lob');
+    // También se puede pedir sin posesión del equipo y sin preparar una devolución.
+    r.pass = null; mate.team = 1; r.ball.owner = mate;
+    p.callCool = 0; p.pressed = button; updatePlayer(r, p);
+    assert.strictEqual(p.callT, CALL_T);
+    assert.strictEqual(p.queued, null, 'pedirla debe cancelar un toque pendiente de una jugada anterior');
+    setPiece(r, 'free', 0, 400, CY);
+    assert(r.players.every(q => q.callT === 0), 'una interrupción debe cancelar los pedidos');
+    p.callCool = 0; p.pressed = button; updatePlayer(r, p);
+    assert.strictEqual(p.callT, 0, 'no se debe pedir durante una interrupción');
+    rooms.delete(r.code);
+  }
+  // 6) Partidos completos solo con bots: sin NaN y terminan.
   for (const mode of [1, 2, 3]) {
     const r = newRoom('t', mode, 3);
     startMatch(r);

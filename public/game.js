@@ -7,8 +7,6 @@
   const TICK_MS = 1000 / 60, INTERP = 4, VIEW_H = 360, FM = 110, FS = 2;
   const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, MOD: 32, TACKLE: 64, PASS: 128, THROUGH: 256, LOB: 512, SHOOT: 1024 };
   const ST_NAMES = ['run', 'slide', 'recover', 'down', 'spin', 'croq', 'step', 'fake', 'rainbow', 'fooled', 'hold', 'dive'];
-  const SKIN = ['#f1c27d', '#e0ac69', '#c68642', '#8d5524', '#ffdbac'];
-  const HAIR = ['#1b1b1b', '#3b2412', '#6b3e1e', '#d9b24c', '#0d0d0d'];
   const KEYMAP = {
     ArrowUp: B.UP, ArrowDown: B.DOWN, ArrowLeft: B.LEFT, ArrowRight: B.RIGHT, Space: B.SPRINT,
     KeyE: B.MOD, ShiftLeft: B.MOD, ShiftRight: B.MOD, KeyQ: B.TACKLE, KeyS: B.PASS, KeyW: B.THROUGH, KeyA: B.LOB, KeyD: B.SHOOT,
@@ -299,10 +297,10 @@
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.clearRect(0, 0, c.width, c.height);
     const me = roomInfo && roomInfo.members.find(m => m.id === socket.id);
-    g.setTransform(5.4, 0, 0, 5.4 * TILT, c.width / 2, c.height * 0.84);
+    g.setTransform(4.8, 0, 0, 4.8 * TILT, c.width / 2, c.height * 0.88);
     ell(g, 1.5, 1, 8, 4.5, 'rgba(0,0,0,0.3)');
     const info = { id: 3, team: me ? me.team : 0, kind: 'field', num: profile.num };
-    drawPlayer(g, { x: 0, y: 0, face: -Math.PI / 2 - 0.5, st: 'run', flags: 0 }, info, { phase: 0, speed: 0 });
+    drawPlayer(g, { x: 0, y: 0, face: Math.PI / 2 - 0.5, st: 'run', flags: 0 }, info, { phase: 0, speed: 0 });
   }
 
   function showEnd() {
@@ -491,174 +489,13 @@
     return teamKit(info.team);
   }
 
-  // ---------- Jugadores (figuras 3/4, pies en y=0, arriba = -y) ----------
-  function torsoPath(g, w, top, bot) {
-    g.beginPath();
-    g.moveTo(-w / 2, top + 1.4);
-    g.quadraticCurveTo(-w / 2, top, -w / 2 + 1.5, top);
-    g.lineTo(w / 2 - 1.5, top);
-    g.quadraticCurveTo(w / 2, top, w / 2, top + 1.4);
-    g.lineTo(w / 2 - 0.8, bot);
-    g.lineTo(-w / 2 + 0.8, bot);
-    g.closePath();
-  }
-  function shirt(g, k, w, top, bot) {
-    torsoPath(g, w, top, bot);
-    g.fillStyle = k.c1; g.fill();
-    g.save(); g.clip();
-    g.fillStyle = k.c2;
-    if (k.pat === 'rayas') for (let x = -w / 2 + 0.9; x < w / 2; x += 2.6) g.fillRect(x, top, 1.2, bot - top);
-    else if (k.pat === 'franja') { g.translate(0, (top + bot) / 2); g.rotate(-0.6); g.fillRect(-1.6, -10, 3.2, 20); }
-    else if (k.pat === 'mitad') g.fillRect(0, top, w, bot - top);
-    else if (k.pat === 'cuadros') for (let y = top, r = 0; y < bot; y += 1.8, r++) for (let x = -w / 2 + (r % 2) * 1.8; x < w / 2; x += 3.6) g.fillRect(x, y, 1.8, 1.8);
-    g.restore();
-    const sh = g.createLinearGradient(-w / 2, 0, w / 2, 0); // volumen
-    sh.addColorStop(0, 'rgba(255,255,255,0.2)'); sh.addColorStop(0.5, 'rgba(0,0,0,0)'); sh.addColorStop(1, 'rgba(0,0,0,0.3)');
-    torsoPath(g, w, top, bot);
-    g.fillStyle = sh; g.fill();
-    g.strokeStyle = 'rgba(0,0,0,0.45)'; g.lineWidth = 0.5; g.stroke();
-  }
-  function head(g, x, y, info, fx, fy) {
-    const skin = SKIN[info.id % SKIN.length], hair = HAIR[(info.id * 7) % HAIR.length];
-    ell(g, x, y + 2.7, 1.3, 1.2, skin);
-    ell(g, x, y, 3.1, 3.3, skin);
-    g.fillStyle = hair;
-    g.beginPath();
-    if (fy < -0.3) g.ellipse(x, y - 0.4, 3.3, 3.1, 0, 0, Math.PI * 2); // de espaldas: nuca
-    else g.ellipse(x - fx * 0.7, y - 1.1, 3.3, 2.4, 0, Math.PI, Math.PI * 2);
-    g.fill();
-    if (fy > -0.3) {
-      g.fillStyle = '#1a1a1a';
-      const ex = x + fx * 1.4, sp = 1.25 * (0.3 + 0.7 * Math.abs(fy));
-      g.fillRect(ex - sp - 0.35, y - 0.1, 0.7, 0.8);
-      if (Math.abs(fx) < 0.85) g.fillRect(ex + sp - 0.35, y - 0.1, 0.7, 0.8);
-    }
-    g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = 0.4;
-    g.beginPath(); g.ellipse(x, y, 3.1, 3.3, 0, 0, Math.PI * 2); g.stroke();
-  }
-
-  function drawStanding(g, p, info, k, a) {
-    const fx = Math.cos(p.face), fy = Math.sin(p.face), skin = SKIN[info.id % SKIN.length];
-    const amp = p.st === 'step' ? 1 : Math.min(1, a.speed / 2.2), sw = Math.sin(a.phase) * amp;
-    const wide = 0.5 + 0.5 * Math.abs(fy), tw = 8.4 * wide + 1.4, hip = 2 * wide + 0.5;
-    const hold = p.st === 'hold';
-    const party = curState === 'goal' && info.team === celebrate;
-    const hop = party ? Math.abs(Math.sin(performance.now() / 140 + info.id)) * 4 : 0;
-    g.translate(0, -Math.abs(Math.cos(a.phase)) * amp * 0.8 - hop);
-    // inclinación del cuerpo hacia donde corre (más al sprintar)
-    const lean = Math.min(1, a.speed / 3) * ((p.flags & 2) ? 0.16 : 0.09);
-    g.transform(1, 0, -fx * lean, 1, 0, 0);
-    // piernas: muslo piel, media con color, botín
-    for (const [s, st0] of [[-1, sw], [1, -sw]]) {
-      const st = s === 1 && (p.flags & 4) ? 1.6 : st0;
-      const hx = s * hip, hy = -10.5, lift = Math.max(0, st) * 1.6;
-      const px = hx * 1.1 + fx * st * 5, py = fy * st * 1.8 - lift;
-      const kx = (hx + px) / 2 + fx * 1.1, ky = (hy + py) / 2 - 0.4;
-      limb(g, hx, hy, kx, ky, 2.7, skin);
-      limb(g, kx, ky, px, py - 0.6, 2.4, k.so);
-      ell(g, px + fx * 0.9, py - 0.2, 1.7 + Math.abs(fx) * 0.7, 1.1, '#111');
-    }
-    const arms = () => {
-      const sy = -18.6, sx = tw / 2 - 0.3;
-      for (const s of [-1, 1]) {
-        const swing = -s * sw;
-        const ex = s * (sx + 0.8) + fx * swing * 1.6, ey = sy + 3.6 + fy * swing * 0.6;
-        let hx = s * (sx + 0.9) + fx * swing * 3.2, hy = sy + 7.2 + fy * swing * 1.2;
-        if (hold) { hx = fx * 3 + s * 1.7; hy = -15.5; }
-        let exx = ex, eyy = ey;
-        if (party) { exx = s * (sx + 2.2); eyy = sy - 4; hx = s * (sx + 3.2); hy = sy - 9 - hop * 0.4; }
-        limb(g, s * sx, sy, exx, eyy, 2.5, k.c1);
-        limb(g, exx, eyy, hx, hy, 1.8, k.gk ? k.c1 : skin);
-        ell(g, hx, hy, k.gk ? 1.5 : 1, k.gk ? 1.5 : 1, k.gk ? '#f2f2f2' : skin);
-      }
-    };
-    const armsFront = hold && fy > -0.3;
-    if (!armsFront) arms();
-    g.fillStyle = k.sh; // pantalón
-    g.beginPath();
-    g.moveTo(-tw / 2 + 0.7, -13); g.lineTo(tw / 2 - 0.7, -13); g.lineTo(tw / 2 - 0.1, -9.4);
-    g.lineTo(0.6, -9.4); g.lineTo(0, -10.4); g.lineTo(-0.6, -9.4); g.lineTo(-tw / 2 + 0.1, -9.4);
-    g.closePath(); g.fill();
-    shirt(g, k, tw, -20.2, -12.4);
-    const numCol = colDist(k.c2, k.c1) > 100 ? k.c2 : ink(k.c1);
-    g.textAlign = 'center'; g.textBaseline = 'middle';
-    if (fy < -0.25) { // dorsal en la espalda
-      g.font = '700 5.4px "Chakra Petch", sans-serif';
-      g.lineWidth = 0.8; g.strokeStyle = 'rgba(0,0,0,0.6)';
-      g.strokeText(info.num, 0, -16.2);
-      g.fillStyle = numCol; g.fillText(info.num, 0, -16.2);
-    } else if (fy > 0.3) {
-      g.fillStyle = k.c2; g.fillRect(-1.3, -20.2, 2.6, 0.9); // cuello
-      g.font = '700 2.4px "Chakra Petch", sans-serif';
-      g.fillStyle = numCol; g.fillText(info.num, tw * 0.22, -17.6);
-    }
-    if (armsFront) arms();
-    head(g, fx * 0.6, -23.8, info, fx, fy);
-  }
-
-  function torsoTop(g, k, x) {
-    g.save();
-    g.beginPath(); g.ellipse(x, 0, 5, 4.4, 0, 0, Math.PI * 2);
-    g.fillStyle = k.c1; g.fill(); g.clip();
-    g.fillStyle = k.c2;
-    if (k.pat === 'rayas') for (let y = -5; y <= 5; y += 2.6) g.fillRect(x - 6, y, 12, 1.2);
-    else if (k.pat === 'mitad') g.fillRect(x - 6, 0, 12, 6);
-    g.restore();
-    g.strokeStyle = 'rgba(0,0,0,0.4)'; g.lineWidth = 0.5;
-    g.beginPath(); g.ellipse(x, 0, 5, 4.4, 0, 0, Math.PI * 2); g.stroke();
-  }
-  function headTop(g, x, info) {
-    ell(g, x, 0, 3.2, 3.2, SKIN[info.id % SKIN.length]);
-    g.fillStyle = HAIR[(info.id * 7) % HAIR.length];
-    g.beginPath(); g.arc(x - 0.4, 0, 3.3, Math.PI * 0.5, Math.PI * 1.5); g.fill();
-  }
-
-  // En el suelo: barrida, caído o estirada del arquero. Eje x local = hacia donde mira.
-  function drawLying(g, p, info, k, a) {
-    const skin = SKIN[info.id % SKIN.length];
-    let lift = 0;
-    if (p.st === 'dive') lift = Math.sin(clamp((performance.now() - (a.stAt || 0)) / 430, 0, 1) * Math.PI) * 10;
-    g.translate(0, -2 - lift);
-    g.rotate(Math.atan2(Math.sin(p.face) * TILT, Math.cos(p.face)));
-    if (p.st === 'dive') {
-      for (const s of [-1, 1]) {
-        limb(g, -5, s * 1.6, -12, s * 2.2, 2.5, k.so);
-        ell(g, -13.4, s * 2.2, 1.8, 1.2, '#111');
-        limb(g, 3, s * 3.4, 13, s * 2.4, 2.3, k.c1);
-        ell(g, 14, s * 2.4, 1.7, 1.7, '#f2f2f2');
-      }
-      ell(g, -3.5, 0, 3.4, 3.8, k.sh);
-      torsoTop(g, k, 1.8);
-      headTop(g, 8.2, info);
-    } else if (p.st === 'slide') {
-      limb(g, 2, 1.4, 12.5, 1.6, 2.6, k.so);
-      ell(g, 14, 1.8, 2.6, 1.6, '#111');
-      limb(g, 2, -2, 6, -5, 2.5, k.so);
-      ell(g, 6.5, -5.5, 2.2, 1.4, '#111');
-      ell(g, 1.5, 0, 4.4, 4.2, k.sh);
-      limb(g, -5, -4, -6, -9, 2.2, k.c1); limb(g, -3, 4, -1, 9, 2.2, k.c1);
-      torsoTop(g, k, -4);
-      headTop(g, -10, info);
-    } else {
-      for (const s of [-1, 1]) {
-        limb(g, 3, s * 2.2, 11, s * 2.4, 2.6, skin);
-        ell(g, 12.5, s * 2.4, 2.3, 1.6, '#111');
-        limb(g, -4, s * 4, -6, s * 9, 2.2, k.c1);
-      }
-      ell(g, 2, 0, 4, 4.6, k.sh);
-      torsoTop(g, k, -3.5);
-      headTop(g, -10.5, info);
-    }
-  }
-
+  // ---------- Jugadores: mallas 3D articuladas, proyectadas sobre la cancha ----------
   function drawPlayer(g, p, info, a) {
     if (!info) return;
-    const k = kitOf(info);
-    g.save();
-    g.translate(p.x, p.y);
-    g.scale(1, 1 / TILT);
-    if (p.st === 'down' || p.st === 'slide' || p.st === 'dive') drawLying(g, p, info, k, a);
-    else drawStanding(g, p, info, k, a);
+    g.save(); g.translate(p.x, p.y); g.scale(1, 1 / TILT);
+    FootballPlayer3D.draw(g, p, info, kitOf(info), a, {
+      time: performance.now(), celebrate: curState === 'goal' && info.team === celebrate,
+    });
     g.restore();
   }
 
@@ -968,6 +805,10 @@
       g.fillStyle = kitOf(info).c1;
       g.beginPath(); g.arc(x, y, p.id === myPid ? 5 : 3.6, 0, Math.PI * 2); g.fill();
       g.strokeStyle = p.id === myPid ? '#ffd23f' : 'rgba(0,0,0,0.7)'; g.lineWidth = p.id === myPid ? 2 : 1; g.stroke();
+      if ((p.flags & 16) && v.state === 'play') {
+        g.strokeStyle = '#7cf3ff'; g.lineWidth = 1.5;
+        g.beginPath(); g.arc(x, y, 6 + Math.sin(v.t * 0.18) * 1.2, 0, Math.PI * 2); g.stroke();
+      }
     }
     g.fillStyle = '#fff';
     g.beginPath(); g.arc(m + v.ball.x * sx, m + v.ball.y * sy, 2.6 + v.ball.z / 20, 0, Math.PI * 2); g.fill();
@@ -978,13 +819,23 @@
   function updateAnims(v, dt) {
     for (const p of v.players) {
       let a = anim.get(p.id);
-      if (!a) anim.set(p.id, (a = { phase: Math.random() * 6, speed: 0, px: p.x, py: p.y }));
-      const d = Math.hypot(p.x - a.px, p.y - a.py);
+      if (!a) anim.set(p.id, (a = { phase: p.id * 1.7, speed: 0, run: 0, sprint: 0, call: 0, px: p.x, py: p.y }));
+      const dx = p.x - a.px, dy = p.y - a.py, d = Math.hypot(dx, dy);
       a.px = p.x; a.py = p.y;
       if (a.st !== p.st) { a.st = p.st; a.stAt = performance.now(); }
       const sp = d > 40 || dt <= 0 ? 0 : d / dt;
-      a.speed += (Math.min(sp, 6) - a.speed) * 0.3;
-      a.phase += (p.st === 'step' ? 0.9 : a.speed * 0.32) * dt;
+      const blend = 1 - Math.pow(0.74, dt);
+      const prevSpeed = a.speed;
+      a.speed += (Math.min(sp, 6) - a.speed) * blend;
+      a.accel = clamp((a.speed - prevSpeed) / Math.max(dt, 0.01), -1, 1);
+      if (d > 0.02 && d < 40) a.moveFace = angLerp(a.moveFace ?? p.face, Math.atan2(dy, dx), blend);
+      if (d > 40) { a.moveFace = p.face; a.speed = 0; }
+
+      a.run += ((p.st === 'run' ? clamp((a.speed - 1.1) / 1.3, 0, 1) : 0) - a.run) * blend;
+      a.sprint += (((p.flags & 2) && p.st === 'run' && a.speed > 0.8 ? 1 : 0) - a.sprint) * blend;
+      a.call += (((p.flags & 16) && v.state === 'play' ? 1 : 0) - a.call) * blend;
+      // Cadencia ligada al desplazamiento: zancadas más largas en vez de patinar con pasos diminutos.
+      a.phase += (p.st === 'step' ? 0.65 : (0.105 + a.run * 0.1 + a.sprint * 0.055) * clamp(a.speed / 1.2, 0, 1)) * dt;
       if (p.st === 'slide') spawnGrass(p.x + Math.cos(p.face) * 10, p.y + Math.sin(p.face) * 10, 1, 1.5);
       if ((p.flags & 2) && Math.random() < 0.08 * dt) spawnGrass(p.x, p.y + 3, 1, 0.6);
     }
@@ -1028,15 +879,39 @@
         const k = kitOf(info);
         ctx.font = '700 5.5px "Chakra Petch", sans-serif';
         const w = ctx.measureText(info.name).width + 5;
-        ctx.fillStyle = k.c1; ctx.fillRect(-w / 2, -36, w, 7);
-        ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 0.5; ctx.strokeRect(-w / 2, -36, w, 7);
-        ctx.fillStyle = ink(k.c1); ctx.fillText(info.name, 0, -32.4);
+        ctx.fillStyle = k.c1; ctx.fillRect(-w / 2, -43, w, 7);
+        ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 0.5; ctx.strokeRect(-w / 2, -43, w, 7);
+        ctx.fillStyle = ink(k.c1); ctx.fillText(info.name, 0, -39.4);
       }
       if (p.id === myPid) {
         const bob = Math.sin(performance.now() / 160) * 1.5;
         ctx.fillStyle = '#ffd23f'; ctx.strokeStyle = '#000'; ctx.lineWidth = 0.8;
-        ctx.beginPath(); ctx.moveTo(-4, -46 + bob); ctx.lineTo(4, -46 + bob); ctx.lineTo(0, -40 + bob); ctx.closePath();
+        ctx.beginPath(); ctx.moveTo(-4, -53 + bob); ctx.lineTo(4, -53 + bob); ctx.lineTo(0, -47 + bob); ctx.closePath();
         ctx.fill(); ctx.stroke();
+      }
+      const call = anim.get(p.id)?.call || 0;
+      if (call > 0.03 && v.state === 'play' && v.owner !== p.id) {
+        ctx.save();
+        const pulse = Math.sin(v.t * 0.2 + p.id);
+        ctx.translate(0, -64 - pulse * 1.5);
+        ctx.globalAlpha = call;
+        const pop = 0.85 + call * 0.15;
+        ctx.scale(pop, pop);
+        ctx.fillStyle = '#e9fcff'; ctx.strokeStyle = '#1c6675'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-17, -7); ctx.lineTo(17, -7); ctx.quadraticCurveTo(21, -7, 21, -3);
+        ctx.lineTo(21, 3); ctx.quadraticCurveTo(21, 7, 17, 7);
+        ctx.lineTo(3, 7); ctx.lineTo(0, 11); ctx.lineTo(-3, 7); ctx.lineTo(-17, 7);
+        ctx.quadraticCurveTo(-21, 7, -21, 3); ctx.lineTo(-21, -3); ctx.quadraticCurveTo(-21, -7, -17, -7);
+        ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.font = '700 8px "Chakra Petch", sans-serif';
+        ctx.fillStyle = '#134853'; ctx.fillText('¡ACÁ!', 0, 0.5);
+        for (const s of [-1, 1]) {
+          const x = s * (24 + pulse * 1.3);
+          limb(ctx, x, -3, x + s * 2, -5, 1, '#7cf3ff');
+          limb(ctx, x + s * 1, 1, x + s * 4, 1, 1, '#7cf3ff');
+        }
+        ctx.restore();
       }
       if (p.st === 'down') {
         const t = performance.now() / 200, ang = Math.atan2(Math.sin(p.face) * TILT, Math.cos(p.face));
