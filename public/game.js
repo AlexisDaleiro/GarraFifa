@@ -347,6 +347,49 @@
   cv.addEventListener('mousedown', e => { audio.init(); if (e.button === 2) setBit(B.TACKLE, true); });
   addEventListener('mouseup', e => { if (e.button === 2) setBit(B.TACKLE, false); });
 
+  // Controles táctiles (visibles solo con pointer: coarse vía CSS)
+  const DIRS = B.UP | B.DOWN | B.LEFT | B.RIGHT;
+  function setDir(mask) {
+    const nb = (bits & ~DIRS) | mask;
+    if (nb !== bits) { bits = nb; socket.emit('input', bits); }
+  }
+  document.querySelectorAll('.tbtns button').forEach(btn => {
+    const bit = B[btn.dataset.b];
+    const up = () => { btn.classList.remove('on'); setBit(bit, false); };
+    btn.addEventListener('pointerdown', e => {
+      e.preventDefault(); audio.init();
+      btn.classList.add('on'); setBit(bit, true);
+      btn.setPointerCapture(e.pointerId);
+    });
+    btn.addEventListener('pointerup', up);
+    btn.addEventListener('pointercancel', up);
+    btn.addEventListener('contextmenu', e => e.preventDefault());
+  });
+  const stick = $('stick'), knob = stick.firstElementChild;
+  let stickId = null;
+  function moveStick(e) {
+    const r = stick.getBoundingClientRect(), R = r.width / 2;
+    let dx = e.clientX - (r.left + R), dy = e.clientY - (r.top + R);
+    const d = Math.hypot(dx, dy);
+    if (d > R) { dx *= R / d; dy *= R / d; }
+    knob.style.transform = `translate(${dx}px, ${dy}px)`;
+    // 8 direcciones: un eje cuenta si supera el 40% del radio
+    const t = R * 0.4;
+    setDir((dy < -t ? B.UP : 0) | (dy > t ? B.DOWN : 0) | (dx < -t ? B.LEFT : 0) | (dx > t ? B.RIGHT : 0));
+  }
+  stick.addEventListener('pointerdown', e => {
+    e.preventDefault(); audio.init();
+    stickId = e.pointerId; moveStick(e); stick.setPointerCapture(stickId);
+  });
+  stick.addEventListener('pointermove', e => { if (e.pointerId === stickId) moveStick(e); });
+  const stickUp = e => {
+    if (e.pointerId !== stickId) return;
+    stickId = null; knob.style.transform = ''; setDir(0);
+  };
+  stick.addEventListener('pointerup', stickUp);
+  stick.addEventListener('pointercancel', stickUp);
+  $('btnHelp').addEventListener('click', () => $('help').classList.toggle('show'));
+
   // ---------- Interpolación ----------
   function sample(list, t) {
     if (!list.length) return null;

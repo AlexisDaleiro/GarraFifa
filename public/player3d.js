@@ -66,6 +66,66 @@
       return true;
     });
   }
+  // Estilo caricatura: cabeza enorme, manos y pies grandes, sombreado plano y contorno de tinta.
+  const INK='#2b1a12',INK_WIDTH=0.32;
+  const CARICATURE={Head:2.9,neck_01:1.15,hand_l:1.35,hand_r:1.35,foot_l:1.2,foot_r:1.2};
+  function toonify(THREE,asset) {
+    // Rampa de 3 tonos: luz, medio tono y sombra cálida, como lápiz de color.
+    const ramp=new THREE.DataTexture(new Uint8Array([110,96,88,255,190,180,170,255,255,255,255,255]),3,1);
+    ramp.minFilter=ramp.magFilter=THREE.NearestFilter;ramp.needsUpdate=true;
+    const done=new Map();
+    asset.traverse(mesh=>{
+      if(!mesh.isMesh) return;
+      const swap=m=>{
+        if(!done.has(m)){const t=new THREE.MeshToonMaterial({name:m.name,color:m.color,map:m.map,gradientMap:ramp});t.userData={...m.userData};done.set(m,t);}
+        return done.get(m);
+      };
+      mesh.material=Array.isArray(mesh.material)?mesh.material.map(swap):swap(mesh.material);
+    });
+  }
+  function inkMaterial(THREE,width,skinned) {
+    const m=new THREE.MeshBasicMaterial({color:INK,side:THREE.BackSide});
+    // Casco invertido: extruir la malla ya deformada por el esqueleto a lo largo de su normal.
+    if(skinned) m.onBeforeCompile=s=>{s.vertexShader=s.vertexShader.replace('#include <skinning_vertex>','#include <skinning_vertex>\ntransformed+=normalize(objectNormal)*'+width.toFixed(5)+';');};
+    m.customProgramCacheKey=()=>'ink'+width.toFixed(5);
+    return m;
+  }
+  function stylize(THREE,shared,actor) {
+    const {object}=actor,inks=shared.inks,v=new THREE.Vector3();
+    object.updateMatrixWorld(true);
+    const skinned=[];actor.bones=[];
+    object.traverse(n=>{
+      if(n.isSkinnedMesh&&!/eye|brow/i.test(n.name)) skinned.push(n);
+      if(n.isBone&&CARICATURE[n.name]) actor.bones.push([n,CARICATURE[n.name]]);
+    });
+    for(const mesh of skinned) {
+      const width=INK_WIDTH/mesh.getWorldScale(v).x,key=width.toFixed(5);
+      if(!inks.has(key)) inks.set(key,inkMaterial(THREE,width,true));
+      const ink=new THREE.SkinnedMesh(mesh.geometry,inks.get(key));
+      ink.bind(mesh.skeleton,mesh.bindMatrix);ink.bindMode=mesh.bindMode;ink.frustumCulled=false;
+      ink.position.copy(mesh.position);ink.quaternion.copy(mesh.quaternion);ink.scale.copy(mesh.scale);
+      mesh.parent.add(ink);
+    }
+    const head=actor.bones.find(([b])=>b.name==='Head')?.[0];
+    const skin=actor.materials.find(m=>m.role==='skin')?.material;
+    if(!head||!skin) return;
+    // Marco de la cara en unidades del atlas, alineado con el modelo en pose de reposo (+Y arriba, +Z frente).
+    const face=new THREE.Group(),q=new THREE.Quaternion();
+    head.getWorldQuaternion(q);face.quaternion.copy(q.invert().multiply(object.getWorldQuaternion(new THREE.Quaternion())));
+    face.scale.setScalar(1/head.getWorldScale(v).x);head.add(face);
+    const part=(mat,pos,size)=>{
+      const m=new THREE.Mesh(shared.sphere,mat),o=new THREE.Mesh(shared.sphere,shared.ink);
+      m.position.set(...pos);m.scale.set(...size);o.position.copy(m.position);o.scale.copy(m.scale).multiplyScalar(1.22);
+      face.add(o,m);
+    };
+    // Medidas del hueso Head sin escalar: cara a ~1.5 al frente, centro de la cabeza ~2.5 arriba.
+    for(const side of [-1,1]) {
+      part(shared.eye,[side*0.5,2.35,1.3],[0.48,0.56,0.34]);
+      part(shared.pupil,[side*0.45,2.3,1.62],[0.22,0.26,0.08]);
+      part(skin,[side*1.45,2.0,0.2],[0.32,0.65,0.42]);
+    }
+    part(skin,[0,1.75,1.75],[0.5,0.52,0.72]);
+  }
   function createBackend(THREE,clone,asset,clips,config=CONFIG,rendererFactory) {
     const actors=new Map(),scene=new THREE.Scene();
     const columns=6,rows=4,tileW=72,tileH=64,resolution=3;
@@ -74,8 +134,15 @@
     renderer.setClearColor(0,0);renderer.outputColorSpace=THREE.SRGBColorSpace;
     const camera=new THREE.OrthographicCamera(0,columns*tileW,rows*tileH,0,0.1,1000);
     camera.position.set(0,0,100);camera.lookAt(0,0,0);
-    scene.add(new THREE.HemisphereLight(0xffffff,0x52664a,2));
-    const sun=new THREE.DirectionalLight(0xffffff,2.5);sun.position.set(-20,35,50);scene.add(sun);
+    scene.add(new THREE.HemisphereLight(0xfff3df,0x8a5a3c,1.6));
+    const sun=new THREE.DirectionalLight(0xffffff,2.6);sun.position.set(-20,35,50);scene.add(sun);
+    // El doble de prueba sin WebGL no trae materiales toon: se dibuja sin estilo.
+    const toon=!!THREE.MeshToonMaterial,shared={inks:new Map()};
+    if(toon) {
+      toonify(THREE,asset);
+      Object.assign(shared,{sphere:new THREE.SphereGeometry(1,14,10),ink:inkMaterial(THREE,0,false),
+        eye:new THREE.MeshBasicMaterial({color:'#fbf6ea'}),pupil:new THREE.MeshBasicMaterial({color:INK})});
+    }
     const box=new THREE.Box3().setFromObject(asset),size=box.getSize(new THREE.Vector3());
     if(!(size.y>0)) throw new Error('player.glb tiene altura nula; se espera glTF con eje Y vertical');
     const scale=config.height/size.y;
@@ -115,7 +182,8 @@
         action.setLoop(ONCE.has(name)?THREE.LoopOnce:THREE.LoopRepeat,ONCE.has(name)?1:Infinity);
         action.clampWhenFinished=ONCE.has(name);actions[name]=action;
       }
-      const actor={key,index,object,pivot,slot,mixer,actions,materials,referenceSpeed:speed,info,current:null,action:null,lastSeen:0,signature:''};
+      const actor={key,index,object,pivot,slot,mixer,actions,materials,referenceSpeed:speed,info,current:null,action:null,lastSeen:0,signature:'',bones:[]};
+      if(toon) stylize(THREE,shared,actor);
       actors.set(key,actor);return actor;
     }
     function tint(actor,kit,info) {
@@ -140,6 +208,7 @@
         if(!actor.state) continue;
         const {p,anim,options}=actor.state;
         updateAction(actor,p,anim,options,delta);
+        for(const [bone,s] of actor.bones) bone.scale.setScalar(s); // Después del mixer, por si un clip anima escala.
         const face=anim.moveFace===undefined||anim.speed<0.12?p.face:anim.moveFace;
         actor.object.rotation.y=Math.PI/2-face;
       }

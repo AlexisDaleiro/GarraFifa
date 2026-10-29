@@ -96,12 +96,13 @@ function buildRoster(room) {
   room.nextId = 1;
   const n = room.mode, form = FORMATIONS[n];
   for (let team = 0; team < 2; team++) {
-    const humans = [...room.members.entries()].filter(([, m]) => m.team === team).slice(0, n);
-    for (let i = 0; i < n; i++) {
+    // Humanos de más (sala con más gente que el modo) juegan igual: reusan la formación.
+    const humans = [...room.members.entries()].filter(([, m]) => m.team === team);
+    for (let i = 0; i < Math.max(n, humans.length); i++) {
       const h = humans[i];
       const prof = h ? h[1] : { name: 'CPU', num: BOT_NUMS[i] };
       const p = makePlayer(room, team, 'field', prof, h ? h[0] : null);
-      p.home = { x: team === 0 ? form[i][0] : W - form[i][0], y: form[i][1] };
+      setHome(p, form[i % n]);
       room.players.push(p);
     }
     const gk = makePlayer(room, team, 'gk', { name: 'Arquero', num: 1 }, null);
@@ -110,11 +111,21 @@ function buildRoster(room) {
   }
 }
 
+function setHome(p, f) {
+  p.home = { x: p.team === 0 ? f[0] : W - f[0], y: f[1] };
+}
+
 function claimBot(room, sid) {
   const m = room.members.get(sid);
   let p = room.players.find(q => q.kind === 'field' && !q.sid && q.team === m.team);
   if (!p) p = room.players.find(q => q.kind === 'field' && !q.sid);
-  if (!p) return;
+  if (!p) {
+    // Sin bots libres: suma un jugador al equipo del que entra en vez de dejarlo mirando.
+    p = makePlayer(room, m.team, 'field', m, sid);
+    setHome(p, FORMATIONS[room.mode][room.players.filter(q => q.team === m.team && q.kind === 'field').length % room.mode]);
+    p.x = p.home.x; p.y = p.home.y;
+    room.players.push(p);
+  }
   m.team = p.team;
   Object.assign(p, { sid, name: m.name, num: m.num, aiDir: null, input: 0, aiHold: 0 });
 }

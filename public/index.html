@@ -48,6 +48,32 @@
     <p id="menuMsg" class="msg" role="status"></p>
   </div>
   <div class="card controls">
+    <div class="only-touch">
+      <h3>Controles táctiles</h3>
+      <p class="hint">Jugá con el celular o la tablet en horizontal.</p>
+      <ul>
+        <li><b class="tk">Joystick</b> (abajo a la izquierda) Mover</li>
+        <li><b class="tk">SPRINT</b> Correr (gasta Garra)</li>
+        <li><b class="tk">PASE</b> Pase raso</li>
+        <li><b class="tk">HUECO</b> Pase al hueco</li>
+        <li><b class="tk">CENTRO</b> Pase bombeado / centro</li>
+        <li><b class="tk">TIRO</b> Mantener: tiro con potencia</li>
+        <li><b class="tk">BARRIDA</b> Barrida</li>
+        <li><b class="tk">REGATE</b> Modificador de regate</li>
+        <li>Sin pelota: <b class="tk">PASE</b> / <b class="tk">HUECO</b> / <b class="tk">CENTRO</b> Pedirla</li>
+        <li><b class="tk">?</b> (arriba a la izquierda) Ver ayuda en el partido</li>
+      </ul>
+      <h3>Filigranas táctiles</h3>
+      <ul>
+        <li><b class="tk">REGATE</b> + joystick atrás · Ruleta</li>
+        <li><b class="tk">REGATE</b> + joystick al costado · Croqueta</li>
+        <li><b class="tk">REGATE</b> + adelante ×2 · Bicicleta</li>
+        <li><b class="tk">REGATE</b> + <b class="tk">SPRINT</b> · Sombrerito</li>
+        <li><b class="tk">TIRO</b> y luego <b class="tk">PASE</b> · Amago de tiro</li>
+        <li>Arquero con la pelota: joystick apunta · <b class="tk">PASE</b> · <b class="tk">HUECO</b> · <b class="tk">CENTRO</b> largo · <b class="tk">TIRO</b> despeje</li>
+      </ul>
+    </div>
+    <div class="only-keys">
     <h3>Controles</h3>
     <ul>
       <li><kbd>←↑↓→</kbd> Mover</li>
@@ -74,6 +100,7 @@
       <li>Ataja solo: se estira, despeja o la agarra</li>
       <li>Cuando la tiene, sacás vos: flechas apuntan · <kbd>S</kbd> pase · <kbd>W</kbd> al hueco · <kbd>A</kbd> largo · <kbd>D</kbd> despeje</li>
     </ul>
+    </div>
   </div>
 </section>
 
@@ -151,11 +178,34 @@
   <div id="banner" class="banner"><b></b><small></small></div>
   <div id="replayTag" class="replay-tag">● REPETICIÓN</div>
   <div id="help" class="help card">
+    <div class="only-touch">
+      <b>Controles táctiles</b>
+      <p>Joystick mover · SPRINT correr · PASE raso · HUECO al hueco · CENTRO bombeado · TIRO (mantener) · BARRIDA</p>
+      <p>Sin pelota: PASE / HUECO / CENTRO para pedirla.</p>
+      <p>REGATE + atrás: Ruleta · + costado: Croqueta · + adelante ×2: Bicicleta · + SPRINT: Sombrerito · TIRO→PASE: Amago</p>
+      <p>Tu arquero con el balón: joystick apunta · PASE · HUECO · CENTRO largo · TIRO despeje</p>
+      <p>Tocá <b>?</b> para cerrar.</p>
+    </div>
+    <div class="only-keys">
     <b>Controles</b>
     <p>←↑↓→ mover · Espacio sprint · S pase · W al hueco · A bombeado · D tiro (mantener) · Q / clic der. barrida</p>
     <p>Sin pelota: S / W / A para pedirla. Tus compañeros ven el cartel ¡ACÁ! y tu brazo levantado. Si el pase ya viene hacia vos, también preparás el toque de primera.</p>
     <p>E/Shift + atrás: Ruleta · + lateral: Croqueta · + adelante ×2: Bicicleta · + Espacio: Sombrerito · D→S: Amago</p>
     <p>Tu arquero con el balón: flechas apuntan · S pase · W al hueco · A largo · D despeje</p>
+    </div>
+  </div>
+  <div class="touch" aria-label="Controles táctiles">
+    <div id="stick" class="stick"><i></i></div>
+    <div class="tbtns">
+      <button data-b="MOD">REGATE</button>
+      <button data-b="LOB">CENTRO</button>
+      <button data-b="THROUGH">HUECO</button>
+      <button data-b="TACKLE">BARRIDA</button>
+      <button data-b="PASS">PASE</button>
+      <button data-b="SHOOT" class="big">TIRO</button>
+      <button data-b="SPRINT" class="wide">SPRINT</button>
+    </div>
+    <button id="btnHelp" class="thelp" aria-label="Ayuda">?</button>
   </div>
   <div id="endScreen" class="end card">
     <h2>FINAL DEL PARTIDO</h2>

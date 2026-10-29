@@ -294,6 +294,88 @@ kbd {
 .end-score { font: 400 56px var(--font-title); margin: 0; }
 .end-actions { display: flex; gap: 10px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
 
+/* ---------- Táctil ---------- */
+.only-touch, .touch { display: none; }
+.hint { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
+.tk { display: inline-block; font: 400 11px var(--font-title); background: var(--accent); color: var(--accent-ink); border-radius: 4px; padding: 1px 6px; }
+
+@media (pointer: coarse) {
+  .only-touch { display: block; }
+  .only-keys { display: none; }
+  #game { touch-action: none; user-select: none; -webkit-user-select: none; }
+  .touch { display: block; position: absolute; inset: 0; pointer-events: none; }
+  .touch > * { pointer-events: auto; }
+  .stick {
+    position: absolute;
+    left: max(18px, env(safe-area-inset-left));
+    bottom: 18px;
+    width: 140px;
+    height: 140px;
+    border-radius: 50%;
+    background: #0006;
+    border: 2px solid #fff6;
+    touch-action: none;
+  }
+  .stick i {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 60px;
+    height: 60px;
+    margin: -30px 0 0 -30px;
+    border-radius: 50%;
+    background: #fffc;
+    box-shadow: 0 3px 0 #000;
+  }
+  .tbtns {
+    position: absolute;
+    right: max(14px, env(safe-area-inset-right));
+    bottom: 14px;
+    display: grid;
+    grid-template-columns: repeat(3, 64px);
+    gap: 8px;
+  }
+  .tbtns button {
+    height: 52px;
+    font: 400 10px var(--font-title);
+    color: #fff;
+    background: #000a;
+    border: 2px solid #fff8;
+    border-radius: 12px;
+    touch-action: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .tbtns button.big { background: #e63946cc; }
+  .tbtns button.wide { grid-column: 1 / -1; background: #1d3f2acc; }
+  .tbtns button.on { background: var(--accent); color: var(--accent-ink); }
+  .thelp {
+    position: absolute;
+    top: 12px;
+    left: max(12px, env(safe-area-inset-left));
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    font: 400 18px var(--font-title);
+    color: var(--accent-ink);
+    background: var(--accent);
+    border: 2px solid #000;
+  }
+  /* HUD arriba para dejar libre la zona de los pulgares */
+  .bars { bottom: auto; top: 60px; padding: 6px 8px; gap: 4px; }
+  .bar span { width: 64px; font-size: 10px; }
+  .track { width: 90px; }
+  #radar { bottom: auto; top: 12px; width: 120px; height: 77px; }
+  .replay-tag { top: 96px; }
+  .help { top: 60px; left: 60px; right: 140px; max-width: none; max-height: calc(100vh - 80px); overflow: auto; z-index: 2; }
+  .code-tag { display: none; }
+}
+@media (pointer: coarse) and (max-height: 420px) {
+  .stick { width: 116px; height: 116px; bottom: 12px; }
+  .stick i { width: 50px; height: 50px; margin: -25px 0 0 -25px; }
+  .tbtns { grid-template-columns: repeat(3, 56px); gap: 6px; bottom: 10px; }
+  .tbtns button { height: 42px; font-size: 9px; }
+}
+
 @keyframes blink { 50% { opacity: 0.35; } }
 @keyframes pump { to { transform: scale(1.08) rotate(-2deg); } }
 
