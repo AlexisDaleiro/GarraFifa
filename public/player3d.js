@@ -1,210 +1,256 @@
-/* Modelos articulados de geometría 3D. Sin recursos ni dependencias remotas. */
+/* Three.js r184. Geometría y texturas compartidas; esqueleto, materiales y mixer por jugador. */
 (function (root) {
   'use strict';
-  const Motion = typeof module !== 'undefined' ? require('./locomotion').FootballMotion : root.FootballMotion;
-  const TAU = Math.PI * 2;
-  const skinColors = ['#edbd96','#d6a078','#b77b54','#754a35','#f4cfaa'];
-  const hairColors = ['#201b19','#38251e','#71492d','#ba965a','#141518'];
-  const rgb = hex => { const n = parseInt(hex.slice(1),16); return [(n>>16)/255,((n>>8)&255)/255,(n&255)/255]; };
-  const sub = (a,b) => a.map((v,i)=>v-b[i]);
-  const cross = (a,b) => [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
-  const unit = a => { const l = Math.hypot(...a)||1; return a.map(v=>v/l); };
-  const mix = (a,b,t) => a.map((v,i)=>v+(b[i]-v)*t);
-  const SPHERE = [];
-  for(let j=0;j<6;j++) for(let i=0;i<10;i++) {
-    const point = (u,v) => [Math.sin(v)*Math.cos(u),Math.sin(v)*Math.sin(u),Math.cos(v)];
-    const a=point(i*TAU/10,j*Math.PI/6), b=point((i+1)*TAU/10,j*Math.PI/6);
-    const c=point((i+1)*TAU/10,(j+1)*Math.PI/6), d=point(i*TAU/10,(j+1)*Math.PI/6);
-    SPHERE.push([a,b,c],[a,c,d]);
+  const CROSSFADE = 0.15;
+  const CLIPS = ['idle','jog','sprint','kick','pass','slide','gk_dive','celebrate'];
+  const ONCE = new Set(['kick','pass','slide','gk_dive']);
+  const SKINS = ['#edbd96','#d6a078','#b77b54','#754a35','#f4cfaa'];
+  const HAIRS = ['#201b19','#38251e','#71492d','#ba965a','#141518'];
+  const CONFIG = { model:'/models/player.glb', clips:'/models/anims/', height:30,
+    // Solo se usan si un clip in-place no permite medir el desplazamiento de sus pies.
+    referenceSpeed:{jog:150,sprint:207} };
+  const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  function selectClip(p,anim={},options={}) {
+    if(options.celebrate) return 'celebrate';
+    if(p.st==='dive') return 'gk_dive';
+    if(['slide','down','recover'].includes(p.st)) return 'slide';
+    if(p.flags&4) return p.flags&32?'pass':'kick';
+    if(['hold','fake','fooled'].includes(p.st)||(anim.speed||0)<0.12) return 'idle';
+    return (p.flags&2)||(anim.sprint||0)>0.5?'sprint':'jog';
   }
-  function build(p, info, kit, anim, options = {}) {
-    const data = new Float32Array(131072), a = anim || {phase:0,speed:0}, phase=a.phase||0;
-    const moving = Math.min(1,(a.speed||0)/2.2), jog=a.run||0, sprint=a.sprint||0;
-    const motion=Motion.body(phase,moving,jog,sprint), hip=motion.height;
-    const skin=rgb(skinColors[info.id%skinColors.length]), hair=rgb(hairColors[(info.id*7)%hairColors.length]);
-    const shirt=rgb(kit.c1), detail=rgb(kit.c2), shorts=rgb(kit.sh), socks=rgb(kit.so);
-    const black=rgb('#151923'), white=rgb('#f4f1e8');
-    const t=options.time||0, celebrate=!!options.celebrate;
-    const prone=['slide','down','dive'].includes(p.st);
-    let torso=false, cursor=0;
-    const lean = motion.lean + (a.accel||0)*0.035;
-    const lc=Math.cos(lean),ls=Math.sin(lean);
-    const jump=celebrate?Math.abs(Math.sin(t/160+info.id))*2:0;
-    const proneHeight=p.st==='dive'?5+Math.sin(t*0.01)*0.3:2.5;
-    const vertex=(pos,n,col)=>{
-      let x=pos[0],y=pos[1],z=pos[2],nx=n[0],ny=n[1],nz=n[2];
-      if(torso) {
-        const h=z-hip, yy=y;
-        y=yy*lc+h*ls; z=h*lc-yy*ls+hip;
-        const nn=ny; ny=nn*lc+nz*ls; nz=nz*lc-nn*ls;
-      }
-      if(prone) {
-        const yy=y; y=z-13; z=-yy+proneHeight;
-        const nn=ny;ny=nz;nz=-nn;
-      } else z+=jump;
-      data[cursor++]=x;data[cursor++]=y;data[cursor++]=z;
-      data[cursor++]=nx;data[cursor++]=ny;data[cursor++]=nz;
-      data[cursor++]=col[0];data[cursor++]=col[1];data[cursor++]=col[2];
+  function materialRole(material,mesh) {
+    const classify=name=>{
+      if(/hair|pelo|cabello|beard|barba/.test(name)) return 'hair';
+      if(/sock|media/.test(name)) return 'socks';
+      if(/short|pantal/.test(name)) return 'shorts';
+      if(/shirt|jersey|camiseta|torso/.test(name)) return 'shirt';
+      if(/skin|piel|face|head|body|arm|leg|hand/.test(name)) return 'skin';
+      return null;
     };
-    const sphere=(center,scale,color)=> {
-      for(const tri of SPHERE) for(const n of tri) {
-        const pos=[center[0]+n[0]*scale[0],center[1]+n[1]*scale[1],center[2]+n[2]*scale[2]];
-        vertex(pos,[n[0]/scale[0],n[1]/scale[1],n[2]/scale[2]],typeof color==='function'?color(n):color);
-      }
-    };
-    const bone=(start,end,r0,r1,color)=> {
-      const axis=unit(sub(end,start)), u=unit(cross(axis,Math.abs(axis[2])<0.9?[0,0,1]:[0,1,0])), v=cross(axis,u);
-      const ring=(j,r,c)=>{const ang=j*TAU/10,n=u.map((x,i)=>x*Math.cos(ang)+v[i]*Math.sin(ang));return {p:c.map((x,i)=>x+n[i]*r),n};};
-      for(let j=0;j<10;j++) {
-        const a=ring(j,r0,start),b=ring(j+1,r0,start),c=ring(j+1,r1,end),d=ring(j,r1,end);
-        for(const q of [a,b,c,a,c,d]) vertex(q.p,q.n,color);
-      }
-      for(let j=0;j<10;j++) {
-        for(const [center,r,sign] of [[start,r0,-1],[end,r1,1]]) {
-          const a=ring(j,r,center),b=ring(j+1,r,center),n=axis.map(x=>x*sign);
-          vertex(center,n,color);vertex(a.p,n,color);vertex(b.p,n,color);
+    const explicit=material.userData?.kitRole||mesh.userData?.kitRole;
+    if(['shirt','shorts','socks','skin','hair'].includes(explicit)) return explicit;
+    return classify((material.name||'').toLowerCase())||classify((mesh.name||'').toLowerCase());
+  }
+  function palette(kit,id) {
+    return {shirt:kit.c1,shorts:kit.sh,socks:kit.so,skin:SKINS[id%SKINS.length],hair:HAIRS[(id*7)%HAIRS.length]};
+  }
+  // Control separado del renderer para verificar transiciones y velocidad sin WebGL.
+  function updateAction(actor,p,anim,options,dt) {
+    let name=selectClip(p,anim,options);
+    if(actor.current && ONCE.has(actor.current) && actor.action.isRunning() &&
+       ['idle','jog','sprint'].includes(name)) name=actor.current;
+    const kick=!!(p.flags&4),retrigger=kick&&!actor.lastKick&&['kick','pass'].includes(name);
+    actor.lastKick=kick;
+    if(name!==actor.current||retrigger) {
+      const next=actor.actions[name];
+      if(!next) throw new Error('Falta el clip '+name);
+      const previous=actor.action,previousName=actor.current;
+      next.reset().setEffectiveWeight(1).setEffectiveTimeScale(1).play();
+      if(previous&&previous!==next) {
+        if(['jog','sprint'].includes(name)&&['jog','sprint'].includes(previousName)) {
+          next.time=(previous.time%previous.getClip().duration)/previous.getClip().duration*next.getClip().duration;
         }
+        next.crossFadeFrom(previous,CROSSFADE,false);
+        actor.retiring=actor.retiring||[];actor.retiring.push({action:previous,left:CROSSFADE});
       }
-    };
-    // Piernas: volumen del muslo, rodilla, gemelo, media y botín independientes.
-    for(const side of [-1,1]) {
-      const pose=Motion.leg(phase+(side===1?Math.PI:0),moving,jog,sprint,hip);
-      if(side===1&&(p.flags&4)) Object.assign(pose,{footF:7.5,footH:3.8,kneeF:4,kneeH:7});
-      const x=side*1.85, h=[x,0,hip], knee=[x,pose.kneeF,pose.kneeH], ankle=[x,pose.footF,pose.footH+0.7];
-      bone(h,mix(h,knee,0.43),1.65,1.52,shorts);
-      bone(mix(h,knee,0.43),knee,1.38,1.05,skin);
-      sphere(knee,[1.06,1.06,1.06],skin);
-      bone(knee,mix(knee,ankle,0.35),1.05,1.2,skin);
-      bone(mix(knee,ankle,0.35),ankle,1.17,0.7,socks);
-      bone(mix(knee,ankle,0.35),mix(knee,ankle,0.42),1.21,1.21,detail);
-      const boot=rgb(['#20242b','#e9e5d7','#e65d32','#a2cf3b'][info.id%4]);
-      sphere([x,pose.footF+0.75,pose.footH+0.55],[0.9,1.8,0.65],boot);
-      sphere([x,pose.footF+0.75,pose.footH+0.15],[0.92,1.85,0.18],black);
+      actor.current=name;actor.action=next;
     }
-    torso=true;
-    sphere([0,0,hip+0.9],[2.95,1.75,2],shorts);
-    // Camiseta con cintura, pecho y hombros; sus bandas se aplican a la superficie 3D.
-    const rings=[[hip+2,2.65,1.6],[hip+4,2.55,1.55],[hip+7.7,3.5,1.95],[hip+9.4,3.85,1.65],[hip+10,2,1.25]];
-    const jersey=(x,y,z)=> {
-      if(kit.pat==='rayas' && Math.floor((x+8)/1.5)%2===0) return detail;
-      if(kit.pat==='mitad'&&x>0) return detail;
-      if(kit.pat==='franja'&&Math.abs(x+(z-hip-6)*0.55)<0.75) return detail;
-      if(kit.pat==='cuadros'&&(Math.floor((x+8)/1.5)+Math.floor((z-hip)/1.5))%2===0) return detail;
-      return shirt;
-    };
-    for(let j=0;j<rings.length-1;j++) for(let i=0;i<24;i++) {
-      const point=(ring,index)=>{const angle=index*TAU/24,[z,rx,ry]=ring;return {p:[Math.cos(angle)*rx,Math.sin(angle)*ry,z],n:unit([Math.cos(angle)/rx,Math.sin(angle)/ry,0.06])};};
-      const a=point(rings[j],i),b=point(rings[j],i+1),c=point(rings[j+1],i+1),d=point(rings[j+1],i);
-      const col=jersey((a.p[0]+c.p[0])/2,(a.p[1]+c.p[1])/2,(a.p[2]+c.p[2])/2);
-      for(const q of [a,b,c,a,c,d]) vertex(q.p,q.n,col);
+    const locomotion=name==='jog'||name==='sprint';
+    // anim.speed está en unidades/tick del servidor de 60 Hz.
+    actor.action.setEffectiveTimeScale(locomotion?(Math.max(0,anim.speed||0)*60/actor.referenceSpeed[name]):1);
+    actor.mixer.update(Math.max(0,dt));
+    actor.retiring=(actor.retiring||[]).filter(fade=>{
+      if(fade.action===actor.action) return false;
+      fade.left-=Math.max(0,dt);
+      if(fade.left<=0){fade.action.stop();return false;}
+      return true;
+    });
+  }
+  function createBackend(THREE,clone,asset,clips,config=CONFIG,rendererFactory) {
+    const actors=new Map(),scene=new THREE.Scene();
+    const columns=6,rows=4,tileW=72,tileH=64,resolution=3;
+    const renderer=rendererFactory?rendererFactory():new THREE.WebGLRenderer({alpha:true,antialias:true,preserveDrawingBuffer:true});
+    renderer.setPixelRatio(1);renderer.setSize(columns*tileW*resolution,rows*tileH*resolution,false);
+    renderer.setClearColor(0,0);renderer.outputColorSpace=THREE.SRGBColorSpace;
+    const camera=new THREE.OrthographicCamera(0,columns*tileW,rows*tileH,0,0.1,1000);
+    camera.position.set(0,0,100);camera.lookAt(0,0,0);
+    scene.add(new THREE.HemisphereLight(0xffffff,0x52664a,2));
+    const sun=new THREE.DirectionalLight(0xffffff,2.5);sun.position.set(-20,35,50);scene.add(sun);
+    const box=new THREE.Box3().setFromObject(asset),size=box.getSize(new THREE.Vector3());
+    if(!(size.y>0)) throw new Error('player.glb tiene altura nula; se espera glTF con eje Y vertical');
+    const scale=config.height/size.y;
+    const center=box.getCenter(new THREE.Vector3());
+    const available=Array.from({length:columns*rows},(_,i)=>i);
+    const speed={...config.referenceSpeed};
+    const warnings=[];
+    for(const name of ['jog','sprint']) {
+      const measured=measureSpeed(THREE,clone,asset,clips[name],scale);
+      if(measured>0.01) speed[name]=measured;
+      else warnings.push('No se pudo medir el apoyo de '+name+'; calibrar referenceSpeed para este asset.');
     }
-    bone([0,0,hip+9.4],[0,0,hip+11.2],1.15,1,skin);
-    // Brazos articulados con codos flexionados y manos, guantes para el arquero.
-    for(const side of [-1,1]) {
-      const shoulder=[side*3.75,0,hip+8.8];
-      const swing=-side*Math.cos(phase-0.45)*moving;
-      const angle=swing*motion.armSwing-jog*0.15;
-      let elbow=[side*4.1,Math.sin(angle)*4.5,shoulder[2]-Math.cos(angle)*4.5];
-      let hand=[side*4,elbow[1]+Math.sin(angle+motion.elbow)*4,elbow[2]-Math.cos(angle+motion.elbow)*4];
-      if(p.st==='hold') {elbow=[side*4,2,hip+5];hand=[side*1.8,4,hip+5.5];}
-      if(celebrate || ((p.flags&16)&&side===-1)) {
-        elbow=[side*5,0,hip+12];hand=[side*(5+Math.sin(t/105)*0.7),1,hip+16];
+    let seen=new Set(),lastTime=null,renderCount=0,lastDt=0;
+    function create(key,info) {
+      if(!available.length) throw new Error('El atlas admite hasta 24 modelos (22 jugadores y vista previa)');
+      const object=clone(asset),pivot=new THREE.Group(),slot=new THREE.Group();
+      object.scale.setScalar(scale);object.position.set(-center.x*scale,-box.min.y*scale,-center.z*scale);
+      pivot.rotation.x=0.48; // La misma vista elevada de la cancha; no se modifica su cámara.
+      pivot.add(object);slot.add(pivot);scene.add(slot);
+      const index=available.shift();slot.position.set((index%columns)*tileW+tileW/2,(rows-1-Math.floor(index/columns))*tileH+12,0);
+      const materials=[],copies=new Map();
+      object.traverse(mesh=>{
+        if(!mesh.isMesh) return;
+        // SkeletonUtils comparte la geometría y clona el esqueleto; no duplicar buffers.
+        mesh.frustumCulled=false;
+        const paint=source=>{
+          const role=materialRole(source,mesh),cacheKey=source.uuid+':'+role;
+          let material=copies.get(cacheKey);
+          if(!material){material=source.clone();copies.set(cacheKey,material);materials.push({material,role,base:source.color?.clone()});}
+          return material;
+        };
+        mesh.material=Array.isArray(mesh.material)?mesh.material.map(paint):paint(mesh.material);
+      });
+      const mixer=new THREE.AnimationMixer(object),actions={};
+      for(const name of CLIPS) {
+        const action=mixer.clipAction(clips[name]);
+        action.setLoop(ONCE.has(name)?THREE.LoopOnce:THREE.LoopRepeat,ONCE.has(name)?1:Infinity);
+        action.clampWhenFinished=ONCE.has(name);actions[name]=action;
       }
-      if(p.st==='dive') {elbow=[side*3,0,hip+14];hand=[side*2,0,hip+18];}
-      const cuff=mix(shoulder,elbow,0.45);
-      bone(shoulder,cuff,1.35,1.2,shirt);
-      bone(cuff,elbow,1.1,0.85,skin);
-      sphere(elbow,[0.9,0.9,0.9],skin);
-      bone(elbow,hand,0.92,0.6,kit.gk?shirt:skin);
-      sphere(hand,[0.7,0.9,1],kit.gk?white:skin);
+      const actor={key,index,object,pivot,slot,mixer,actions,materials,referenceSpeed:speed,info,current:null,action:null,lastSeen:0,signature:''};
+      actors.set(key,actor);return actor;
     }
-    // Cabeza: cráneo, mandíbula, orejas, nariz, ojos y cortes de pelo con volumen.
-    const headZ=hip+13.2;
-    sphere([0,0,headZ],[1.9,1.7,2.5],skin);
-    sphere([0,0.55,headZ-1],[1.45,1.3,1.25],skin);
-    for(const side of [-1,1]) {
-      sphere([side*1.85,0,headZ-0.15],[0.35,0.4,0.65],skin);
-      sphere([side*0.7,1.5,headZ+0.1],[0.32,0.17,0.18],white);
-      sphere([side*0.7,1.65,headZ+0.1],[0.14,0.1,0.15],black);
-    }
-    sphere([0,1.7,headZ-0.3],[0.36,0.55,0.6],skin);
-    sphere([0,1.25,headZ-1.65],[0.7,0.2,0.16],rgb('#8d5141'));
-    sphere([0,-0.18,headZ+0.6],[1.96,1.75,2.12],n=>n[2]>0.1||n[1]<-0.25?hair:skin);
-    if(info.id%3===1) sphere([0,1,headZ-1.25],[1.4,0.55,0.85],hair);
-    // Dorsal sobre un plano 3D, ocluido e iluminado junto con el resto del modelo.
-    const digits={0:['111','101','101','101','111'],1:['010','110','010','010','111'],2:['111','001','111','100','111'],3:['111','001','111','001','111'],4:['101','101','111','001','001'],5:['111','100','111','001','111'],6:['111','100','111','101','111'],7:['111','001','010','010','010'],8:['111','101','111','101','111'],9:['111','101','111','001','111']};
-    const num=String(info.num||10), size=0.45;
-    for(let di=0;di<num.length;di++) for(let row=0;row<5;row++) for(let col=0;col<3;col++) if(digits[num[di]][row][col]==='1') {
-      const x=(di*4+col-num.length*2+0.5)*size,z=hip+7.7-row*size,y=-1.99;
-      for(const q of [[x,y,z],[x+size,y,z],[x+size,y,z-size],[x,y,z],[x+size,y,z-size],[x,y,z-size]]) vertex(q,[0,-1,0],white);
-    }
-    if(cursor>data.length) throw new Error('La malla excede el búfer de vértices');
-    return data.subarray(0,cursor);
-  }
-  let renderer;
-  function init() {
-    const canvas=document.createElement('canvas'); canvas.width=192;canvas.height=224;
-    const gl=canvas.getContext('webgl',{alpha:true,antialias:true,premultipliedAlpha:false,preserveDrawingBuffer:true});
-    if(!gl) return {canvas,gl:null};
-    const shader=(type,source)=> {const s=gl.createShader(type);gl.shaderSource(s,source);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));return s;};
-    const program=gl.createProgram();
-    gl.attachShader(program,shader(gl.VERTEX_SHADER,`
-      attribute vec3 position; attribute vec3 normal; attribute vec3 color;
-      uniform float yaw; varying vec3 vColor; varying vec3 vNormal;
-      void main(){
-        float c=cos(yaw),s=sin(yaw);
-        vec3 p=vec3(-s*position.x+c*position.y,c*position.x+s*position.y,position.z);
-        vNormal=vec3(-s*normal.x+c*normal.y,c*normal.x+s*normal.y,normal.z);
-        vColor=color;
-        gl_Position=vec4(p.x/24.,(p.z*.95-p.y*.5-16.)/28.,-(p.y*.85+p.z*.5)/80.,1.);
-      }`));
-    gl.attachShader(program,shader(gl.FRAGMENT_SHADER,`
-      precision mediump float; varying vec3 vColor; varying vec3 vNormal;
-      void main(){
-        vec3 n=normalize(vNormal),light=normalize(vec3(-.45,-.55,.85));
-        float diffuse=max(0.,dot(n,light));
-        float rim=pow(1.-abs(dot(n,normalize(vec3(0.,-0.85,.5)))),3.)*.12;
-        vec3 col=vColor*(.48+diffuse*.65)+vec3(rim);
-        gl_FragColor=vec4(col,1.);
-      }`));
-    gl.linkProgram(program); if(!gl.getProgramParameter(program,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
-    gl.useProgram(program); const buffer=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buffer);
-    for(const [name,offset] of [['position',0],['normal',12],['color',24]]) {
-      const location=gl.getAttribLocation(program,name);gl.enableVertexAttribArray(location);gl.vertexAttribPointer(location,3,gl.FLOAT,false,36,offset);
-    }
-    gl.enable(gl.DEPTH_TEST); gl.clearColor(0,0,0,0);
-    canvas.addEventListener('webglcontextlost',e=>{e.preventDefault();renderer=null;});
-    return {canvas,gl,program,buffer,yaw:gl.getUniformLocation(program,'yaw')};
-  }
-  // Si WebGL no está disponible, proyectar las mismas mallas con orden de profundidad.
-  function software(g,data,yaw) {
-    const c=Math.cos(yaw),s=Math.sin(yaw),tris=[];
-    for(let i=0;i<data.length;i+=27) {
-      const points=[];let depth=0,light=0;
-      for(let j=0;j<3;j++) {
-        const k=i+j*9,x=-s*data[k]+c*data[k+1],y=c*data[k]+s*data[k+1],z=data[k+2];
-        points.push([x,y*.5-z*.95]);depth+=y*.85+z*.5;
-        const nx=-s*data[k+3]+c*data[k+4],ny=c*data[k+3]+s*data[k+4];
-        const nl=Math.hypot(nx,ny,data[k+5])||1;
-        light+=Math.max(0,(-nx*.4-ny*.5+data[k+5]*.75)/nl);
+    function tint(actor,kit,info) {
+      const colors=palette(kit,info.id),signature=JSON.stringify(colors);
+      if(actor.signature===signature) return;
+      for(const {material,role,base} of actor.materials) {
+        if(role && material.color) material.color.set(colors[role]);
+        else if(base && material.color) material.color.copy(base);
       }
-      const shade=.48+light/3*.65;
-      tris.push({points,depth,color:`rgb(${[data[i+6],data[i+7],data[i+8]].map(v=>Math.min(255,Math.round(v*shade*255))).join(',')})`});
+      actor.signature=signature;
     }
-    tris.sort((a,b)=>a.depth-b.depth);
-    for(const t of tris){g.fillStyle=t.color;g.beginPath();g.moveTo(...t.points[0]);g.lineTo(...t.points[1]);g.lineTo(...t.points[2]);g.closePath();g.fill();}
+    function remove(actor) {
+      actor.mixer.stopAllAction();actor.mixer.uncacheRoot(actor.object);scene.remove(actor.slot);
+      actor.object.traverse(mesh=>{if(mesh.isSkinnedMesh) mesh.skeleton.dispose();});
+      for(const {material} of actor.materials) material.dispose();
+      available.push(actor.index);actors.delete(actor.key); // Nunca destruir geometrías/texturas compartidas.
+    }
+    function render(time) {
+      const delta=lastTime===null?0:Math.max(0,(time-lastTime)/1000);lastTime=time;lastDt=delta;
+      for(const actor of actors.values()) {
+        if(time-actor.lastSeen>10000){remove(actor);continue;}
+        if(!actor.state) continue;
+        const {p,anim,options}=actor.state;
+        updateAction(actor,p,anim,options,delta);
+        const face=anim.moveFace===undefined||anim.speed<0.12?p.face:anim.moveFace;
+        actor.object.rotation.y=Math.PI/2-face;
+      }
+      renderer.render(scene,camera);renderCount++;
+    }
+    function draw(g,p,info,kit,anim={},options={}) {
+      const key=p.id===undefined?'preview':p.id;
+      const time=options.time===undefined?performance.now():options.time;
+      // Primer ID repetido = siguiente cuadro: draw() no necesita un frameId nuevo en game.js.
+      const fresh=seen.has(key)||lastTime===null;
+      if(fresh) seen=new Set();
+      // Liberar instancias de una partida anterior antes de ocupar una nueva casilla.
+      for(const a of actors.values()) if(time-a.lastSeen>10000) remove(a);
+      const actor=actors.get(key)||create(key,info);
+      actor.lastSeen=time;actor.state={p:{...p},anim:{...anim},options:{...options}};tint(actor,kit,info);
+      seen.add(key);
+      if(fresh) render(time);
+      // Las casillas nuevas aparecen al siguiente cuadro; la animación del resto se renderiza una sola vez.
+      const x=(actor.index%columns)*tileW*resolution,y=Math.floor(actor.index/columns)*tileH*resolution;
+      g.imageSmoothingEnabled=true;g.drawImage(renderer.domElement,x,y,tileW*resolution,tileH*resolution,-tileW/2,12-tileH,tileW,tileH);
+    }
+    function dispose(){for(const actor of Array.from(actors.values()))remove(actor);renderer.dispose();}
+    function stats(){return {players:actors.size,mixers:actors.size,renderers:1,renders:renderCount,lastFrameSeconds:lastDt,warnings:[...warnings]};}
+    return {draw,dispose,stats,actors,renderer};
   }
-  function draw(g,p,info,kit,anim,options) {
-    if(!renderer) renderer=init();
-    const data=build(p,info,kit,anim,options), a=anim||{}, moving=Math.min(1,(a.speed||0)/1.2);
-    const target=a.moveFace===undefined?p.face:a.moveFace;
-    const yaw=p.face+Math.atan2(Math.sin(target-p.face),Math.cos(target-p.face))*moving;
-    const {gl,canvas}=renderer;
-    if(!gl) return software(g,data,yaw);
-    gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
-    gl.uniform1f(renderer.yaw,yaw);gl.bufferData(gl.ARRAY_BUFFER,data,gl.DYNAMIC_DRAW);
-    gl.drawArrays(gl.TRIANGLES,0,data.length/9);
-    g.imageSmoothingEnabled=true;g.drawImage(canvas,-24,-44,48,56);
+  function inPlace(THREE,clip,asset) {
+    const result=clip.clone();
+    const roots=new Set([asset.name]);asset.traverse(n=>{if(n.isBone&&!n.parent?.isBone) roots.add(n.name);});
+    for(const track of result.tracks) {
+      const parsed=THREE.PropertyBinding.parseTrackName(track.name);
+      if(parsed.propertyName!=='position'||!roots.has(parsed.nodeName)) continue;
+      // Conservar rebote vertical y pose inicial; la física del server controla X/Z.
+      for(let i=3;i<track.values.length;i+=3){track.values[i]=track.values[0];track.values[i+2]=track.values[2];}
+    }
+    return result;
   }
-  root.FootballPlayer3D={build,draw};
-})(typeof module !== 'undefined' ? module.exports : window);
+  function measureSpeed(THREE,clone,asset,clip,scale) {
+    const object=clone(asset),feet=[];
+    object.traverse(n=>{if(n.isBone&&/foot|ankle|pie|toe/i.test(n.name)) feet.push(n);});
+    if(!feet.length) return 0;
+    const mixer=new THREE.AnimationMixer(object);mixer.clipAction(clip).play();
+    const samples=feet.map(()=>[]),steps=48;
+    for(let i=0;i<=steps;i++) {
+      mixer.setTime(clip.duration*i/steps);object.updateMatrixWorld(true);
+      feet.forEach((foot,j)=>samples[j].push(foot.getWorldPosition(new THREE.Vector3())));
+    }
+    const speeds=[];
+    for(const points of samples) {
+      const heights=points.map(p=>p.y).sort((a,b)=>a-b),floor=heights[Math.floor(heights.length*.15)];
+      const max=heights[heights.length-1],threshold=floor+(max-floor)*.15;
+      for(let i=1;i<steps;i++) if(points[i].y<=threshold&&points[i-1].y<=threshold) {
+        const d=Math.hypot(points[i].x-points[i-1].x,points[i].z-points[i-1].z)*scale*steps/clip.duration;
+        if(d>0.01) speeds.push(d);
+      }
+    }
+    mixer.stopAllAction();mixer.uncacheRoot(object);
+    object.traverse(n=>{if(n.isSkinnedMesh)n.skeleton.dispose();});
+    speeds.sort((a,b)=>a-b);return speeds.length?speeds[Math.floor(speeds.length/2)]:0;
+  }
+  function validate(THREE,asset,clips) {
+    let skinned=0;const nodes=new Set();asset.traverse(n=>{nodes.add(n.name);if(n.isSkinnedMesh)skinned++;});
+    if(!skinned) throw new Error('player.glb no contiene SkinnedMesh: se necesita un modelo riggeado');
+    for(const name of CLIPS) {
+      const clip=clips[name];if(!clip||clip.duration<=0||!clip.tracks.length) throw new Error('Falta una animación válida: '+name);
+      for(const track of clip.tracks) {
+        const parsed=THREE.PropertyBinding.parseTrackName(track.name);
+        if(parsed.nodeName&&!nodes.has(parsed.nodeName)) throw new Error('El clip '+name+' referencia un hueso ausente: '+parsed.nodeName);
+      }
+    }
+  }
+  let backend=null,loading=null,failure=null,lastDraw=null;
+  const report=(message,error=false)=>{
+    let el=document.getElementById('playerModelStatus');
+    if(!message){el?.remove();return;}
+    if(!el){el=document.createElement('div');el.id='playerModelStatus';el.setAttribute('role','status');
+      el.style.cssText='position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:1000;padding:12px 18px;border-radius:8px;max-width:90vw;background:#172231;color:#fff;font:14px system-ui;box-shadow:0 4px 20px #0008';document.body.append(el);}
+    el.textContent=message;el.dataset.error=String(error);
+  };
+  async function load() {
+    report('Cargando jugadores 3D…');
+    try {
+      // Detectar el bloqueo local antes de solicitar módulos de terceros.
+      const check=await fetch(CONFIG.model,{method:'HEAD'});
+      if(!check.ok) throw new Error('Falta '+CONFIG.model+' (HTTP '+check.status+')');
+      const [THREE,{GLTFLoader},{clone}]=await Promise.all([import('three'),import('three/addons/loaders/GLTFLoader.js'),import('three/addons/utils/SkeletonUtils.js')]);
+      const loader=new GLTFLoader(),model=await loader.loadAsync(CONFIG.model),clips={};
+      await Promise.all(CLIPS.map(async name=>{
+        const embedded=model.animations.find(c=>c.name.toLowerCase()===name);
+        if(embedded){clips[name]=embedded;return;}
+        const path=CONFIG.clips+name+'.glb';
+        let gltf;try{gltf=await loader.loadAsync(path);}catch(e){throw new Error('No se pudo cargar '+path+': '+e.message);}
+        clips[name]=gltf.animations.find(c=>c.name.toLowerCase()===name)||gltf.animations[0];
+      }));
+      validate(THREE,model.scene,clips);
+      for(const name of CLIPS) clips[name]=inPlace(THREE,clips[name],model.scene);
+      backend=createBackend(THREE,clone,model.scene,clips);report('');
+      for(const warning of backend.stats().warnings) console.warn('[player3d] '+warning);
+      if(lastDraw){const d=lastDraw;d.g.save();d.g.setTransform(d.transform);backend.draw(d.g,d.p,d.info,d.kit,d.anim,d.options);d.g.restore();}
+      return backend;
+    } catch(e){failure=e;report('No se pudieron cargar los jugadores: '+e.message,true);return null;}
+  }
+  const api={
+    draw(g,p,info,kit,anim={},options={}) {
+      if(backend) return backend.draw(g,p,info,kit,anim,options);
+      lastDraw={g,p,info,kit,anim,options,transform:g.getTransform()};
+      if(!loading) loading=load();
+    },
+    ready(){if(!loading)loading=load();return loading;},
+    stats(){return backend?{status:'ready',...backend.stats()}:{status:failure?'error':'loading',error:failure?.message||null,players:0,mixers:0,renderers:0};},
+    dispose(){backend?.dispose();backend=null;loading=null;failure=null;lastDraw=null;},
+  };
+  root.FootballPlayer3D=api;
+  if(typeof module!=='undefined') module.exports={FootballPlayer3D:api,selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CROSSFADE,CLIPS,CONFIG};
+})(typeof module!=='undefined'?module.exports:window);

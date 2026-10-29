@@ -1,35 +1,122 @@
 'use strict';
-const assert = require('node:assert/strict');
-const { FootballPlayer3D: model } = require('../public/player3d');
-const kit = {c1:'#7cc0ea',c2:'#ffffff',sh:'#111111',so:'#ffffff',pat:'rayas'};
-let count=0;
-for(const state of ['run','slide','down','dive','hold','spin','recover']) {
-  for(const flags of [0,4,16]) {
-    const mesh=model.build({st:state,flags},{id:3,num:99},kit,{phase:1.2,speed:3.45,run:1,sprint:1}, {time:500});
-    assert(mesh instanceof Float32Array);
-    assert.equal(mesh.length%27,0,'cada triángulo debe tener posición, normal y color');
-    assert(mesh.length/27>2000,'debe existir una malla tridimensional completa');
-    const bounds=[[Infinity,-Infinity],[Infinity,-Infinity],[Infinity,-Infinity]];
-    for(let i=0;i<mesh.length;i+=9) {
-      for(let j=0;j<9;j++) assert(Number.isFinite(mesh[i+j]),'vértice o material inválido');
-      assert(Math.hypot(mesh[i+3],mesh[i+4],mesh[i+5])>0,'normal de iluminación vacía');
-      for(let j=0;j<3;j++) {bounds[j][0]=Math.min(bounds[j][0],mesh[i+j]);bounds[j][1]=Math.max(bounds[j][1],mesh[i+j]);}
-      for(let j=6;j<9;j++) assert(mesh[i+j]>=0&&mesh[i+j]<=1,'color fuera de rango');
-    }
-    assert(bounds.every(([lo,hi])=>hi-lo>3),'el jugador debe tener volumen en los tres ejes');
-    count++;
-  }
+const assert=require('node:assert/strict');
+const {selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CLIPS,CONFIG,CROSSFADE}=require('../public/player3d');
+assert.equal(CROSSFADE,.15);
+for(const [p,a,o,expected] of [
+ [{st:'run',flags:0},{speed:0},{},'idle'],
+ [{st:'run',flags:0},{speed:2.5,run:1},{},'jog'],
+ [{st:'run',flags:2},{speed:3.45},{},'sprint'],
+ [{st:'run',flags:0},{speed:3,sprint:.9},{},'sprint'],
+ [{st:'run',flags:4},{speed:2},{},'kick'],
+ [{st:'run',flags:36},{speed:2},{},'pass'],
+ [{st:'slide'},{speed:4},{},'slide'],
+ [{st:'recover'},{speed:0},{},'slide'],
+ [{st:'dive'},{speed:2},{},'gk_dive'],
+ [{st:'hold'},{speed:0},{},'idle'],
+ [{st:'run'},{speed:0},{celebrate:true},'celebrate'],
+]) assert.equal(selectClip(p,a,o),expected);
+assert.equal(materialRole({name:'Jersey'},{name:'Body'}),'shirt');
+assert.equal(materialRole({name:'Pantalon'},{name:'Body'}),'shorts');
+assert.equal(materialRole({name:'Medias'},{}),'socks');
+assert.equal(materialRole({name:'Hair'},{}),'hair');
+assert.equal(materialRole({name:'Skin'},{}),'skin');
+assert.equal(materialRole({name:'Boot'},{}),null);
+assert.equal(materialRole({userData:{kitRole:'shirt'}},{}),'shirt');
+const kit={c1:'#7cc0ea',sh:'#111111',so:'#ffffff'};
+assert.equal(palette(kit,1).shirt,kit.c1);
+assert.notEqual(palette(kit,1).skin,palette(kit,2).skin);
+class Action {
+ constructor(clip){this.clip=clip;this.running=false;this.resets=0;this.elapsed=0;this.time=0;}
+ reset(){this.resets++;this.elapsed=0;return this;}
+ setEffectiveWeight(v){this.weight=v;return this;}
+ setEffectiveTimeScale(v){this.rate=v;return this;}
+ play(){this.running=true;return this;}
+ crossFadeFrom(old,time,warp){this.fade={old,time,warp};return this;}
+ setLoop(mode){this.loop=mode;return this;}
+ getClip(){return this.clip;}
+ stop(){this.running=false;return this;}
+ isRunning(){return this.running;}
 }
-const idle=model.build({st:'run',flags:0},{id:1,num:10},kit,{phase:0,speed:0});
-const sprint=model.build({st:'run',flags:0},{id:1,num:10},kit,{phase:1,speed:3.45,run:1,sprint:1});
-assert.notDeepEqual(idle,sprint,'la articulación debe cambiar la geometría');
-console.log(`modelos 3D OK: ${count} combinaciones de pose, normales, volumen y materiales`);
+let mixerCount=0;
+class Mixer {
+ constructor(object){this.object=object;this.actions=[];this.updates=0;mixerCount++;}
+ clipAction(clip){const a=new Action(clip);this.actions.push(a);return a;}
+ update(dt){this.updates++;for(const a of this.actions)if(a.running){a.elapsed+=dt*(a.rate??1);if(a.loop==='once'&&a.elapsed>=a.clip.duration)a.running=false;}}
+ stopAllAction(){this.actions.forEach(a=>a.running=false);}
+ uncacheRoot(){this.uncached=true;}
+}
+const clips=Object.fromEntries(CLIPS.map(name=>[name,{name,duration:.8,tracks:[{name:'Hips.quaternion'}]}]));
+const actor={actions:Object.fromEntries(CLIPS.map(name=>[name,new Action(clips[name])])),mixer:{update(){}},referenceSpeed:{jog:150,sprint:207}};
+updateAction(actor,{st:'run',flags:0},{speed:2.5},{},1/60);
+assert.equal(actor.current,'jog');assert.equal(actor.action.rate,1);
+updateAction(actor,{st:'run',flags:2},{speed:3.45},{},1/60);
+assert.equal(actor.current,'sprint');assert.equal(actor.action.rate,1);assert.equal(actor.action.fade.time,.15);
+updateAction(actor,{st:'run',flags:2},{speed:1.725},{},1/60);assert.equal(actor.action.rate,.5);
+updateAction(actor,{st:'run',flags:4},{speed:0},{},1/60);
+const kick=actor.action;
+updateAction(actor,{st:'run',flags:0},{speed:2.5},{},1/60);assert.equal(actor.action,kick,'no cortar el golpe al caer el flag');
+kick.running=false;updateAction(actor,{st:'run',flags:0},{speed:2.5},{},1/60);assert.equal(actor.current,'jog');
+// Atlas: un renderer y 22 mixers; geometría/texturas compartidas, materiales y esqueletos independientes.
+class V {constructor(x=0,y=0,z=0){Object.assign(this,{x,y,z});} set(x,y,z){Object.assign(this,{x,y,z});return this;}setScalar(v){return this.set(v,v,v);}}
+class Node {
+ constructor(name=''){this.name=name;this.children=[];this.position=new V();this.scale=new V(1,1,1);this.rotation={x:0,y:0,z:0};}
+ add(child){this.children.push(child);child.parent=this;return this;}
+ remove(child){this.children=this.children.filter(c=>c!==child);}
+ traverse(fn){fn(this);this.children.forEach(c=>c.traverse(fn));}
+ lookAt(){}
+}
+class Color {constructor(value){this.value=value;}clone(){return new Color(this.value);}set(v){this.value=v;}copy(v){this.value=v.value;}}
+let materialId=0,disposedMaterials=0;
+const texture={shared:true},geometry={shared:true};
+function material(name){return {name,uuid:String(materialId++),color:new Color('#ffffff'),map:texture,clone(){return material(this.name);},dispose(){disposedMaterials++;}};}
+function makeAsset(){const a=new Node('Scene');a.add(new Node('Hips'));const mesh=new Node('Body');Object.assign(mesh,{isMesh:true,isSkinnedMesh:true,geometry,material:material('Jersey'),skeleton:{dispose(){this.disposed=true;}}});a.add(mesh);return a;}
+const asset=makeAsset(),clones=[];
+const clone=()=>{const a=makeAsset();clones.push(a);return a;};
+class Box {setFromObject(){return this;}getSize(v){return v.set(1,1.8,.5);}getCenter(v){return v.set(0,.9,0);}get min(){return {y:0};}}
+const THREE={Scene:Node,Group:Node,OrthographicCamera:Node,HemisphereLight:Node,DirectionalLight:Node,Box3:Box,Vector3:V,AnimationMixer:Mixer,LoopOnce:'once',LoopRepeat:'repeat',SRGBColorSpace:'srgb',PropertyBinding:{parseTrackName(name){const i=name.lastIndexOf('.');return {nodeName:name.slice(0,i),propertyName:name.slice(i+1)};}}};
+let rendererCount=0,renderCount=0;
+const backend=createBackend(THREE,clone,asset,clips,CONFIG,()=>{rendererCount++;return {domElement:{},setPixelRatio(){},setSize(){},setClearColor(){},render(){renderCount++;},dispose(){this.disposed=true;}};});
+const g={drawImage(){}};
+for(let frame=0;frame<3;frame++)for(let id=1;id<=22;id++)backend.draw(g,{id,st:'run',flags:0,face:0},{id},id===22?{c1:'#22c55e',sh:'#000000',so:'#22c55e'}:kit,{speed:2.5},{time:frame*1000/60});
+assert.equal(rendererCount,1);assert.equal(renderCount,3);assert.equal(backend.stats().players,22);assert.equal(mixerCount,22);
+const a1=backend.actors.get(1),a2=backend.actors.get(2),gk=backend.actors.get(22);
+assert.notEqual(a1.mixer,a2.mixer);assert.notEqual(a1.object.children[1].skeleton,a2.object.children[1].skeleton);
+assert.equal(a1.object.children[1].geometry,a2.object.children[1].geometry);
+assert.notEqual(a1.object.children[1].material,a2.object.children[1].material);
+assert.equal(a1.object.children[1].material.map,a2.object.children[1].material.map);
+assert.equal(gk.materials[0].material.color.value,'#22c55e');
+assert.equal(a1.materials[0].material.color.value,kit.c1);
+assert(a1.mixer.updates===3&&a2.mixer.updates===2,'actualizar cada mixer una sola vez por cuadro');
+const rootClip={clone(){return {tracks:[{name:'Scene.position',values:[1,2,3,4,5,6]},{name:'Hips.quaternion',values:[0,0,0,1]}]};}};
+assert.deepEqual(inPlace(THREE,rootClip,asset).tracks[0].values,[1,2,3,1,5,3]);
+assert.doesNotThrow(()=>validate(THREE,asset,clips));
+assert.throws(()=>validate(THREE,asset,{...clips,jog:null}),/jog/);
+assert.throws(()=>validate(THREE,new Node('NoRig'),clips),/riggeado/);
+assert.throws(()=>validate(THREE,asset,{...clips,jog:{duration:1,tracks:[{name:'Absent.quaternion'}]}}),/ausente/);
+backend.dispose();assert.equal(backend.stats().players,0);assert(disposedMaterials>=22);
+console.log('player3d OK: clips, crossfade 0.15s, velocidad, tintes, root motion, 22 mixers / 1 renderer / 1 pasada por cuadro');
 
-// Equipos sin WebGL: se proyecta la misma geometría, sin perder al jugador.
-global.document={createElement:()=>({getContext:()=>null})};
-let triangles=0;
-const context={beginPath(){},closePath(){},fill(){triangles++;},moveTo(x,y){assert(Number.isFinite(x+y));},lineTo(x,y){assert(Number.isFinite(x+y));}};
-model.draw(context,{st:'run',flags:0,face:0.7},{id:2,num:10},kit,{phase:1,speed:2.5,run:1},{});
-assert(triangles>2000);
-delete global.document;
-console.log('proyección alternativa sin WebGL OK');
+// Assets reales incluidos: impedir que un build pase con rutas que devuelven 404.
+const fs=require('node:fs'),path=require('node:path');
+function glb(file){
+ const raw=fs.readFileSync(path.join(__dirname,'../public/models',file));
+ assert.equal(raw.readUInt32LE(0),0x46546c67);assert.equal(raw.readUInt32LE(4),2);assert.equal(raw.readUInt32LE(8),raw.length);
+ const length=raw.readUInt32LE(12),json=JSON.parse(raw.subarray(20,20+length).toString()),binaryLength=raw.readUInt32LE(20+length);
+ assert(binaryLength>=json.buffers[0].byteLength);
+ for(const v of json.bufferViews)assert((v.byteOffset||0)+v.byteLength<=binaryLength,'bufferView fuera del binario');
+ return json;
+}
+const player=glb('player.glb'),names=new Set(player.nodes.map(n=>n.name));
+assert(player.skins.length>0&&player.skins[0].joints.length>20,'debe incluir el rig importado');
+for(const role of ['shirt','shorts','socks','skin','hair'])assert(player.materials.some(m=>m.extras?.kitRole===role));
+for(const name of CLIPS){
+ const data=glb('anims/'+name+'.glb'),animation=data.animations.find(a=>a.name===name);
+ assert(animation&&animation.channels.length>20,'clip riggeado completo: '+name);
+ for(const channel of animation.channels){
+  assert(names.has(data.nodes[channel.target.node].name),'hueso ausente en '+name);
+  const sampler=animation.samplers[channel.sampler];
+  assert(data.accessors[sampler.input].count>1,'clip sin keyframes: '+name);
+ }
+}
+assert(fs.readFileSync(path.join(__dirname,'../public/models/LICENSE-Quaternius.txt'),'utf8').includes('CC0'));
+console.log('assets GLB reales OK: modelo, rig, materiales y los ocho clips locales');

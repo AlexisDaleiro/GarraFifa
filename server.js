@@ -247,7 +247,7 @@ function kickBall(room, p, vx, vy, vz, spin) {
   b.owner = null; b.vx = vx; b.vy = vy; b.vz = vz; b.spin = spin || 0;
   b.lastTeam = p.team; b.lastPlayer = p.id;
   room.pass = null;
-  p.touchCool = 14; p.kickT = 10; p.charging = false; p.charge = 0; p.queued = null; p.callT = 0;
+  p.touchCool = 14; p.kickT = 10; p.kickKind = 'kick'; p.charging = false; p.charge = 0; p.queued = null; p.callT = 0;
   emitEv(room, { type: 'kick', p: r1(Math.hypot(vx, vy) + Math.abs(vz)), x: r1(b.x), y: r1(b.y) });
 }
 
@@ -306,6 +306,7 @@ function doPass(room, p, aim, kind) {
     const v = clamp((kind === 'through' ? 4.5 : 3) + d * (1 - ROLL), 4.5, 14);
     kickBall(room, p, Math.cos(ang) * v, Math.sin(ang) * v, 0, 0);
   }
+  p.kickKind = 'pass';
   if (mate) {
     room.pass = { to: mate.id, x: tx, y: ty, t: 150 };
     emitEv(room, { type: 'pass', to: mate.id });
@@ -929,7 +930,8 @@ function snapshot(room) {
     p: room.players.map(p => [
       p.id, r1(p.x), r1(p.y), Math.round(normAng(p.face) * 100) / 100, ST[p.st], Math.round(p.stamina),
       Math.round(p.charge * 100), (p.tired ? 1 : 0) | (p.sprinting ? 2 : 0) | (p.kickT > 0 ? 4 : 0) | (p.boostT > 0 ? 8 : 0)
-        | (p.callT > 0 && b.owner !== p && room.state === 'play' ? 16 : 0),
+        | (p.callT > 0 && b.owner !== p && room.state === 'play' ? 16 : 0)
+        | (p.kickT > 0 && p.kickKind === 'pass' ? 32 : 0),
     ]),
   };
   // rp: destinatario del pase en curso · pt: a quién iría el pase del humano con balón (vista previa)
@@ -1117,6 +1119,7 @@ function selfTest() {
     Object.assign(r.ball, { owner: p, x: 311, y: 320 });
     doPass(r, p, Math.atan2(100, 260) - 0.5, kind);
     assert.strictEqual(r.pass && r.pass.to, mate.id, `${kind}: no eligió al compañero`);
+    assert(snapshot(r).p.find(q => q[0] === p.id)[7] & 32, 'el snapshot debe distinguir pase de tiro para el clip pass');
     for (let i = 0; i < 240 && r.ball.owner !== mate; i++) { updatePlayer(r, mate); updateBall(r); checkTouches(r); }
     assert.strictEqual(r.ball.owner, mate, `${kind}: el pase no llegó`);
     rooms.delete(r.code);
