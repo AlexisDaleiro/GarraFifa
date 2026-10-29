@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Garra FC</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bungee&family=Chakra+Petch:wght@500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- MENÚ -->
+<section id="menu" class="screen active">
+  <h1 class="logo">GARRA<span>FC</span></h1>
+  <p class="tagline">Fútbol arcade · regates · barridas · salas con amigos</p>
+  <div class="card menu-card">
+    <label class="field">Tu nombre
+      <input id="name" maxlength="12" autocomplete="off" placeholder="Crack">
+    </label>
+    <div class="menu-cols">
+      <div class="menu-col">
+        <h3>Crear sala</h3>
+        <label class="field">Modo
+          <select id="mode">
+            <option value="1">1 vs 1</option>
+            <option value="2" selected>2 vs 2</option>
+            <option value="3">3 vs 3</option>
+          </select>
+        </label>
+        <label class="field">Tiempo
+          <select id="minutes">
+            <option value="3" selected>3 minutos</option>
+            <option value="5">5 minutos</option>
+          </select>
+        </label>
+        <button id="btnCreate" class="btn primary">Crear sala</button>
+      </div>
+      <div class="menu-col">
+        <h3>Unirse</h3>
+        <label class="field">Código de sala
+          <input id="joinCode" maxlength="4" autocomplete="off" placeholder="GOL7" class="code-input">
+        </label>
+        <button id="btnJoin" class="btn">Unirse con código</button>
+      </div>
+    </div>
+    <p id="menuMsg" class="msg" role="status"></p>
+  </div>
+  <div class="card controls">
+    <h3>Controles</h3>
+    <ul>
+      <li><kbd>←↑↓→</kbd> Mover</li>
+      <li><kbd>Espacio</kbd> Sprint (gasta Garra)</li>
+      <li><kbd>S</kbd> Pase raso</li>
+      <li><kbd>W</kbd> Pase al hueco</li>
+      <li><kbd>A</kbd> Pase bombeado / centro</li>
+      <li><kbd>D</kbd> Mantener: tiro con potencia</li>
+      <li><kbd>Q</kbd> / <kbd>Clic der.</kbd> Barrida</li>
+      <li><kbd>E</kbd> / <kbd>Shift</kbd> Modificador de regate</li>
+    </ul>
+    <h3>Filigranas</h3>
+    <ul>
+      <li><kbd>E</kbd> + dirección hacia atrás · Ruleta</li>
+      <li><kbd>E</kbd> + dirección lateral · Croqueta</li>
+      <li><kbd>E</kbd> + adelante ×2 · Bicicleta</li>
+      <li><kbd>E</kbd> + <kbd>Espacio</kbd> · Sombrerito</li>
+      <li><kbd>D</kbd> y luego <kbd>S</kbd> · Amago de tiro</li>
+      <li>Sin balón: <kbd>D</kbd>/<kbd>S</kbd> al llegar el balón · volea o cabezazo</li>
+    </ul>
+    <h3>Arquero</h3>
+    <ul>
+      <li>Ataja solo: se estira, despeja o la agarra</li>
+      <li>Cuando la tiene, sacás vos: flechas apuntan · <kbd>S</kbd> pase · <kbd>W</kbd> al hueco · <kbd>A</kbd> largo · <kbd>D</kbd> despeje</li>
+    </ul>
+  </div>
+</section>
+
+<!-- LOBBY -->
+<section id="lobby" class="screen">
+  <header class="lobby-head">
+    <div class="room-code">SALA <b id="roomCode">----</b></div>
+    <button id="btnCopy" class="btn small">Copiar código</button>
+    <button id="btnLeave" class="btn small ghost">Salir</button>
+  </header>
+  <div class="lobby-grid">
+    <div id="teamCard0" class="team-card red">
+      <h2 id="teamName0">LOCAL</h2>
+      <ul id="list0" class="team-list"></ul>
+      <button class="btn joinTeam" data-team="0">Jugar en Rojo</button>
+    </div>
+    <div class="card custom">
+      <h3>Equipos</h3>
+      <canvas id="kitPreview" width="180" height="180" aria-label="Vista previa de la camiseta"></canvas>
+      <div class="custom-fields">
+        <label class="field">Dorsal <input id="num" type="number" min="1" max="99" value="10"></label>
+      </div>
+      <div class="host-settings">
+        <label class="field">Local <select id="teamSel0"></select></label>
+        <label class="field">Visitante <select id="teamSel1"></select></label>
+      </div>
+      <div id="hostSettings" class="host-settings">
+        <label class="field">Modo
+          <select id="lobbyMode">
+            <option value="1">1 vs 1</option>
+            <option value="2">2 vs 2</option>
+            <option value="3">3 vs 3</option>
+          </select>
+        </label>
+        <label class="field">Tiempo
+          <select id="lobbyMinutes">
+            <option value="3">3 min</option>
+            <option value="5">5 min</option>
+          </select>
+        </label>
+      </div>
+      <button id="btnStart" class="btn primary big">¡A JUGAR!</button>
+      <p id="lobbyMsg" class="msg" role="status"></p>
+    </div>
+    <div id="teamCard1" class="team-card blue">
+      <h2 id="teamName1">VISITANTE</h2>
+      <ul id="list1" class="team-list"></ul>
+      <button class="btn joinTeam" data-team="1">Jugar en Azul</button>
+    </div>
+  </div>
+</section>
+
+<!-- PARTIDO -->
+<section id="game" class="screen">
+  <canvas id="cv"></canvas>
+  <div class="scoreboard">
+    <span id="tn0" class="tname red">LOC</span>
+    <span id="sc0" class="goals">0</span>
+    <span id="clock" class="clock">03:00</span>
+    <span id="sc1" class="goals">0</span>
+    <span id="tn1" class="tname blue">VIS</span>
+  </div>
+  <div class="code-tag">SALA <b id="hudCode">----</b> · <kbd>H</kbd> ayuda · <kbd>M</kbd> sonido</div>
+  <div class="bars">
+    <div class="bar">
+      <span>GARRA</span>
+      <div class="track"><div id="stamFill" class="fill stam"></div></div>
+    </div>
+    <div class="bar">
+      <span>POTENCIA</span>
+      <div class="track power"><div id="powFill" class="fill pow"></div><i class="mark m1"></i><i class="mark m2"></i><i class="mark m3"></i></div>
+    </div>
+  </div>
+  <canvas id="radar" width="200" height="128" aria-label="Radar"></canvas>
+  <div id="banner" class="banner"><b></b><small></small></div>
+  <div id="replayTag" class="replay-tag">● REPETICIÓN</div>
+  <div id="help" class="help card">
+    <b>Controles</b>
+    <p>←↑↓→ mover · Espacio sprint · S pase · W al hueco · A bombeado · D tiro (mantener) · Q / clic der. barrida</p>
+    <p>E/Shift + atrás: Ruleta · + lateral: Croqueta · + adelante ×2: Bicicleta · + Espacio: Sombrerito · D→S: Amago</p>
+    <p>Tu arquero con el balón: flechas apuntan · S pase · W al hueco · A largo · D despeje</p>
+  </div>
+  <div id="endScreen" class="end card">
+    <h2>FINAL DEL PARTIDO</h2>
+    <p id="endScore" class="end-score"></p>
+    <p id="endWinner"></p>
+    <div class="end-actions">
+      <button id="btnRematch" class="btn primary">Revancha</button>
+      <button id="btnBackLobby" class="btn">Volver al lobby</button>
+    </div>
+    <p id="endWait" class="msg">Esperando al anfitrión…</p>
+  </div>
+</section>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="teams.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
