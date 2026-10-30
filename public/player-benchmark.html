@@ -17,7 +17,7 @@ function frame(now){requestAnimationFrame(frame);const dt=(now-last)/1000;last=n
  for(let i=0;i<12;i++){g.fillStyle=i%2?'#ffffff05':'#00000005';g.fillRect(i*cv.width/12,0,cv.width/12,cv.height);}
  g.strokeStyle='#ffffff88';g.lineWidth=2;g.strokeRect(25,20,cv.width-50,cv.height-40);
  g.beginPath();g.moveTo(cv.width/2,20);g.lineTo(cv.width/2,cv.height-20);g.stroke();
- const columns=innerWidth<600?4:11,rows=Math.ceil(22/columns),scale=Math.min(cv.width/columns/100,cv.height/rows/90),name=mode.value;
+ const columns=innerWidth<600?4:7,rows=Math.ceil(22/columns),scale=Math.min(cv.width/columns/100,cv.height/rows/90),name=mode.value;
  for(let i=0;i<22;i++){
   const col=i%columns,row=Math.floor(i/columns),x=(col+.5)*cv.width/columns,y=(row+.75)*cv.height/rows,speed=name==='sprint'?3.45:name==='jog'?2.5:0;
   const tick=phase*60,start=Math.floor(tick/110)*110,age=tick-start,fx={tick,team:row};
@@ -28,7 +28,7 @@ function frame(now){requestAnimationFrame(frame);const dt=(now-last)/1000;last=n
   const st=fx.fall?'down':name==='slide'?'slide':name==='gk_dive'?'dive':'run',flags=name==='kick'?4:name==='pass'?36:name==='sprint'?2:0;
   g.save();g.translate(x,y);g.scale(scale,scale);g.fillStyle='#0004';g.beginPath();g.ellipse(0,1,6,2.3,0,0,Math.PI*2);g.fill();
   FootballPlayer3D.draw(g,{id:i+1,x:0,y:0,st,flags,face:Math.PI/2+.3*Math.sin(phase*.3+i*.2)},{id:i+1,kind:i%11===0?'gk':'field'}, {c1:i%11===0?'#b694ff':i<11?'#7cc0ea':'#ffdc1f',sh:i<11?'#17202b':'#204db0',so:'#f2f2f2'}, {speed,run:speed?1:0,sprint:name==='sprint'?1:0},{time:now,fx,celebrate:name==='celebrate'});
-  g.fillStyle='white';g.font='3px system-ui';g.textAlign='center';g.fillText(String(i+1).padStart(2,'0'),0,9);g.restore();
+  g.fillStyle='white';g.font='600 5px system-ui';g.textAlign='center';g.fillText(String(i+1).padStart(2,'0')+' · '+ToonFX.identity(i+1).body.name.toUpperCase(),0,12);g.restore();
  }
  if(ready){frames++;samples.push(dt*1000);if(now-sampleAt>=2000){const fps=frames*1000/(now-sampleAt),sorted=samples.slice().sort((a,b)=>a-b),p95=sorted[Math.floor(sorted.length*.95)]||0,stats=FootballPlayer3D.stats();label.textContent=`${fps.toFixed(1)} FPS · p95 ${p95.toFixed(1)} ms · ${stats.players} modelos · ${stats.mixers} mixers · ${stats.renderers} renderer`;label.dataset.fps=fps.toFixed(2);label.dataset.p95=p95.toFixed(2);label.dataset.players=stats.players;label.dataset.renders=stats.renders;frames=0;samples=[];sampleAt=now;}}
 }

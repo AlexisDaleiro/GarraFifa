@@ -29,6 +29,11 @@ console.log('Rig real:',backend.stats(),'CPU por cuadro (ms):',(performance.now(
 for(const actor of backend.actors.values()){
  actor.object.updateMatrixWorld(true);
  actor.object.traverse(n=>{if(n.isBone)assert(n.matrixWorld.elements.every(Number.isFinite),'pose inválida');});
+ if(actor.identity.body.crutches){
+  assert.equal(actor.current,'idle','las muletas usan marcha procedural, sin ciclo de carrera');
+  assert.equal(actor.crutches.poles.length,2);assert(actor.crutches.group.visible);
+ }
+ if(actor.identity.body.belly)assert(actor.belly,'la barriga debe existir en el rig');
 }
 const actors=[...backend.actors.values()];const meshes=a=>{const out=[];a.object.traverse(n=>{if(n.isSkinnedMesh)out.push(n);});return out;};
 assert.equal(meshes(actors[0])[0].geometry,meshes(actors[1])[0].geometry);
@@ -67,9 +72,11 @@ for(const scenario of ['goal','fall']){
  const {tileW,tileH,base}=mod.ATLAS;
  for(const a of backend.actors.values()){
   a.slot.updateMatrixWorld(true);const box=new THREE.Box3().setFromObject(a.object,true),p=a.slot.position;
+  if(a.crutches)assert(!a.crutches.group.visible,'las muletas se guardan al caer o festejar');
   assert(box.min.x>=p.x-tileW/2&&box.max.x<=p.x+tileW/2,scenario+': desborde horizontal');
   assert(box.min.y>=p.y-base&&box.max.y<=p.y+tileH-base,scenario+': desborde vertical');
  }
 }
 console.log('Atlas OK: cuerpos y accesorios contenidos en sus casillas al caer y festejar');
+console.log('Variedad OK: siete cuerpos, barriga articulada y pares de muletas con marcha procedural');
 backend.dispose();

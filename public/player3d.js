@@ -42,6 +42,7 @@
   // Control separado del renderer para verificar transiciones y velocidad sin WebGL.
   function updateAction(actor,p,anim,options,dt) {
     let name=selectClip(p,anim,options);
+    if(actor.identity?.body.crutches&&['jog','sprint'].includes(name))name='idle';
     if(actor.current && ONCE.has(actor.current) && actor.action.isRunning() &&
        ['idle','jog','sprint'].includes(name)) name=actor.current;
     const kick=!!(p.flags&4),retrigger=kick&&!actor.lastKick&&['kick','pass'].includes(name);
@@ -144,6 +145,44 @@
     if(style===1)for(let i=0;i<4;i++)tuft([0,4.1,-.8+i*.6],[.28,1.05,.42]);
     if(style===2){tuft([0,3.65,0],[1.45,.7,1.25],skin);tuft([-.5,4.17,.5],[.45,.12,.35],shared.eye);}
     if(style===3)for(const side of [-1,1]){const mesh=tuft([side*.48,1.4,1.94],[.65,.24,.18]);mesh.rotation.z=side*.25;}
+    addBodyExtras(THREE,shared,actor);
+  }
+  function bodyScales(actor){
+    const body=actor.identity.body;
+    for(const [name,r] of Object.entries(actor.rig)){
+      const f=/^spine_0[12]$/.test(name)?body.spine:/^thigh_/.test(name)?body.leg:/^upperarm_/.test(name)?body.arm:null;
+      if(f)r.bone.scale.set(r.scale.x*f[0],r.scale.y*f[1],r.scale.z*f[2]);
+      if(/^foot_/.test(name)&&body.feet)r.bone.scale.multiplyScalar(body.feet);
+    }
+    actor.object.scale.set(actor.baseScale*body.height*body.width,actor.baseScale*body.height,actor.baseScale*body.height);
+  }
+  function addBodyExtras(THREE,shared,actor){
+    const body=actor.identity.body;
+    const mesh=(parent,geometry,material,pos,size)=>{const n=new THREE.Mesh(geometry,material);n.position.set(...pos);n.scale.set(...size);parent.add(n);return n;};
+    if(body.belly){
+      const spine=actor.object.getObjectByName('spine_01'),shirt=actor.materials.find(m=>m.role==='shirt')?.material;
+      if(spine&&shirt){
+        const belly=new THREE.Group(),q=new THREE.Quaternion(),v=new THREE.Vector3();
+        spine.getWorldQuaternion(q);belly.quaternion.copy(q.invert().multiply(actor.object.getWorldQuaternion(new THREE.Quaternion())));
+        belly.scale.setScalar(1/spine.getWorldScale(v).x);spine.add(belly);
+        mesh(belly,shared.sphere,shared.ink,[0,-.5,2.8],[6.3,6.5,5.7]);
+        mesh(belly,shared.sphere,shirt,[0,-.5,2.8],[6.05,6.25,5.45]);
+        actor.belly=belly;actor.bellyScale=belly.scale.x;
+      }
+    }
+    if(body.crutches){
+      const group=new THREE.Group();group.scale.setScalar(1/actor.baseScale);actor.object.add(group);
+      actor.crutches={group,poles:[]};
+      for(const side of [-1,1]){
+        const pole=new THREE.Group();pole.position.set(side*4.6,20,.3);group.add(pole);actor.crutches.poles.push(pole);
+        for(const x of [-.75,.75])mesh(pole,shared.tube,shared.metal,[x,-6.1,0],[.19,11.8,.19]);
+        mesh(pole,shared.tube,shared.metal,[0,-15.8,0],[.24,8,.24]);
+        mesh(pole,shared.box,shared.rubber,[0,0,0],[2.8,.8,1.1]);
+        mesh(pole,shared.box,shared.rubber,[0,-5.3,0],[1.9,.55,.9]);
+        mesh(pole,shared.box,shared.metal,[0,-11.9,0],[1.85,.4,.45]);
+        mesh(pole,shared.sphere,shared.rubber,[0,-20,0],[.55,.4,.55]);
+      }
+    }
   }
   function createBackend(THREE,clone,asset,clips,config=CONFIG,rendererFactory) {
     const actors=new Map(),scene=new THREE.Scene();
@@ -160,6 +199,8 @@
     if(toon) {
       toonify(THREE,asset);
       Object.assign(shared,{sphere:new THREE.SphereGeometry(1,14,10),tuft:new THREE.SphereGeometry(1,8,6),ink:inkMaterial(THREE,0,false),
+        tube:new THREE.CylinderGeometry(1,1,1,6),box:new THREE.BoxGeometry(1,1,1),
+        metal:new THREE.MeshToonMaterial({color:'#bed5e2'}),rubber:new THREE.MeshToonMaterial({color:INK}),
         tear:new THREE.MeshBasicMaterial({color:'#6de6ff'}),
         spiralInk:new THREE.LineBasicMaterial({color:INK}),
         spiral:new THREE.BufferGeometry().setFromPoints(Array.from({length:28},(_,i)=>{const a=i*.48,r=i/65;return new THREE.Vector3(Math.cos(a)*r,Math.sin(a)*r,0);})),
@@ -204,9 +245,16 @@
         action.setLoop(ONCE.has(name)?THREE.LoopOnce:THREE.LoopRepeat,ONCE.has(name)?1:Infinity);
         action.clampWhenFinished=ONCE.has(name);actions[name]=action;
       }
-      const actor={key,index,object,pivot,motion,slot,mixer,actions,materials,referenceSpeed:speed,info,baseY:object.position.y,current:null,action:null,lastSeen:0,signature:'',bones:[]};
+      const actor={key,index,object,pivot,motion,slot,mixer,actions,materials,referenceSpeed:speed,info,baseScale:scale,baseY:object.position.y,current:null,action:null,lastSeen:0,signature:'',bones:[]};
       if(toon) stylize(THREE,shared,actor);
       actor.rig={};object.traverse(n=>{if(n.isBone)actor.rig[n.name]={bone:n,q:n.quaternion.clone(),scale:n.scale.clone()};});
+      if(actor.identity){
+        // Bajar la pelvis lo que acortaron las piernas: los pies siguen apoyando.
+        const feet=['foot_l','foot_r'].map(n=>actor.rig[n]?.bone).filter(Boolean),v=new THREE.Vector3();
+        const floor=()=>{object.updateMatrixWorld(true);return Math.min(...feet.map(b=>object.worldToLocal(b.getWorldPosition(v)).y));};
+        const before=feet.length?floor():0;bodyScales(actor);const after=feet.length?floor():0;
+        actor.baseY=actor.baseY*actor.identity.body.height+(before-after)*scale*actor.identity.body.height;
+      }
       actors.set(key,actor);return actor;
     }
     function tint(actor,kit,info) {
@@ -233,13 +281,11 @@
         for(const r of Object.values(actor.rig)){r.bone.quaternion.copy(r.q);r.bone.scale.copy(r.scale);}
         updateAction(actor,p,anim,options,delta);
         for(const [bone,s] of actor.bones) bone.scale.setScalar(s); // Después del mixer, por si un clip anima escala.
-        if(actor.identity)for(const [name,r] of Object.entries(actor.rig)){
-          const body=actor.identity.body,factor=/^spine_0[12]$/.test(name)?body.spine:/^thigh_/.test(name)?body.leg:/^upperarm_/.test(name)?body.arm:null;
-          if(factor)r.bone.scale.set(r.scale.x*factor[0],r.scale.y*factor[1],r.scale.z*factor[2]);
-        }
+        if(actor.identity)bodyScales(actor);
         const face=anim.moveFace===undefined||anim.speed<0.12?p.face:anim.moveFace;
         actor.object.rotation.y=Math.PI/2-face;
         applyProcedural(actor,p,options);
+        applyVariety(actor,p,anim,options);
       }
       renderer.render(scene,camera);renderCount++;
     }
@@ -265,6 +311,27 @@
     return {draw,dispose,stats,actors,renderer};
   }
   // Todo el movimiento cómico se aplica después del mixer y se restaura cada cuadro.
+  function applyVariety(actor,p,anim,options){
+    const tick=options.fx?.tick??(options.time||0)*.06,phase=tick*.24+(Number(p.id)||0),moving=p.st==='run'?clamp((anim.speed||0)/2.5,0,1):0;
+    if(actor.belly){
+      const s=actor.bellyScale,wobble=Math.sin(phase)*moving*.06;
+      actor.belly.scale.set(s*(1+wobble),s*(1-wobble*.5),s*(1+wobble*.5));
+    }
+    if(!actor.crutches)return;
+    const active=!options.fx?.fall&&!options.fx?.goal&&['run','hold','fake','fooled','step'].includes(p.st);
+    actor.crutches.group.visible=active;if(!active)return;
+    const hop=Math.max(0,Math.sin(phase))*moving;
+    actor.motion.position.y+=hop*2.2;actor.motion.rotation.z+=Math.sin(phase)*moving*.035;
+    for(const [i,pole] of actor.crutches.poles.entries()){
+      pole.rotation.x=Math.sin(phase)*moving*.3;pole.rotation.z=(i?1:-1)*.09;
+      pole.position.z=.3+Math.cos(phase)*moving*1.1;
+    }
+    const bend=(name,x,z=0)=>{const b=actor.rig[name]?.bone;if(b){b.rotation.x+=x;b.rotation.z+=z;}};
+    bend('upperarm_l',-.28,-.12);bend('upperarm_r',-.28,.12);
+    bend('lowerarm_l',-.55);bend('lowerarm_r',-.55);
+    bend('thigh_r',-.3-moving*.2);bend('calf_r',.8+moving*.25);
+    bend('thigh_l',Math.sin(phase)*moving*.18);
+  }
   function applyProcedural(actor,p,options) {
     const f=options.fx?.fall,tick=options.fx?.tick||0,m=actor.motion;
     m.rotation.order='YXZ';m.rotation.x=m.rotation.y=m.rotation.z=0;m.position.set(0,0,0);m.scale.setScalar(1);
