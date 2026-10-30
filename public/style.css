@@ -426,3 +426,44 @@ kbd {
   .stick { left: 12px; width: 110px; height: 110px; }
   .tbtns { right: 12px; grid-template-columns: repeat(2, 72px); gap: 8px; }
 }
+
+/* Horizontal bajo (celular acostado): HUD compacto en la franja superior, lejos de los pulgares. */
+@media (pointer: coarse) and (orientation: landscape) and (max-height: 420px), (max-width: 860px) and (orientation: landscape) and (max-height: 420px) {
+  .scoreboard { top: max(6px, env(safe-area-inset-top)); box-shadow: 0 3px 0 #000; }
+  .scoreboard > span { padding: 3px 8px; }
+  .tname { font-size: 11px; }
+  .goals { font-size: 18px; min-width: 32px; }
+  .clock { font-size: 15px; min-width: 66px; letter-spacing: 1px; }
+  .thelp { top: max(6px, env(safe-area-inset-top)); width: 32px; height: 32px; font-size: 15px; }
+  .bars { top: max(6px, env(safe-area-inset-top)); bottom: auto; left: calc(max(12px, env(safe-area-inset-left)) + 40px); padding: 4px 6px; gap: 3px; }
+  .bar { gap: 6px; }
+  .bar span { width: 50px; font-size: 9px; }
+  .track { width: 72px; height: 10px; }
+  #radar { top: max(6px, env(safe-area-inset-top)); bottom: auto; right: max(10px, env(safe-area-inset-right)); width: 96px; height: 61px; }
+  .replay-tag { top: 52px; }
+  .help { top: 48px; max-height: calc(100dvh - 60px); }
+}
+
+/* Celular en vertical: el partido no entra; pedimos girar (menú y lobby siguen usables). */
+.rotate { display: none; }
+@media (pointer: coarse) and (orientation: portrait) {
+  .rotate {
+    position: absolute;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 24px;
+    text-align: center;
+    background: #0c3a1af2;
+    color: var(--accent);
+    touch-action: none;
+  }
+  .rotate svg { animation: tilt 1.6s ease-in-out infinite; }
+  .rotate b { font: 400 26px var(--font-title); }
+  .rotate small { color: #fffc; font-size: 14px; }
+}
+@keyframes tilt { 0%, 30% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
