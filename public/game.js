@@ -211,14 +211,16 @@
   $('num').value = profile.num;
   if (/^#[A-Za-z0-9]{4}$/.test(location.hash)) $('joinCode').value = location.hash.slice(1).toUpperCase();
 
+  // En táctil pedimos pantalla completa + horizontal (Android); iOS lo ignora y queda el aviso de girar.
+  const goLandscape = () => { if (!matchMedia('(pointer: coarse)').matches) return; try { const fs = document.documentElement.requestFullscreen?.(); (fs || Promise.resolve()).then(() => screen.orientation?.lock?.('landscape')).catch(() => {}); } catch {} };
   $('btnCreate').onclick = () => {
-    audio.init(); readProfile(); toon.reset(); resetNetwork();
+    goLandscape(); audio.init(); readProfile(); toon.reset(); resetNetwork();
     socket.emit('create', { mode: +$('mode').value, minutes: +$('minutes').value, profile }, onJoined);
   };
   $('btnJoin').onclick = () => {
     const code = $('joinCode').value.trim().toUpperCase();
     if (code.length !== 4) return msg('menuMsg', 'El código tiene 4 caracteres');
-    audio.init(); readProfile(); toon.reset(); resetNetwork();
+    goLandscape(); audio.init(); readProfile(); toon.reset(); resetNetwork();
     socket.emit('join', { code, profile }, onJoined);
   };
   $('joinCode').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnJoin').click(); });
