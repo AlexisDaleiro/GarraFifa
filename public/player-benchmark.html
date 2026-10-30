@@ -1,11 +1,13 @@
 <!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Garra FC · Prueba de 22 jugadores</title>
-<style>body{margin:0;background:#091810;color:#e7f6ed;font:15px system-ui}header{display:flex;flex-wrap:wrap;gap:20px;align-items:center;padding:18px 26px}h1{font-size:20px;margin:0}#stats{color:#bcdfc7}select{background:#183d29;color:white;padding:7px;border:1px solid #426e52;border-radius:6px}canvas{display:block;width:100%;height:calc(100vh - 90px)}small{color:#96b8a0}</style>
+<style>body{height:100dvh;display:flex;flex-direction:column;overflow:hidden;margin:0;background:#091810;color:#e7f6ed;font:15px system-ui}header{flex:none;display:flex;flex-wrap:wrap;gap:20px;align-items:center;padding:18px 26px}h1{font-size:20px;margin:0}#stats{color:#bcdfc7}select{background:#183d29;color:white;padding:7px;border:1px solid #426e52;border-radius:6px}canvas{display:block;flex:1;min-height:0;width:100%;height:0}small{color:#96b8a0}</style>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"}}</script>
+<script src="toon-fx.js"></script>
 <script src="player3d.js"></script></head><body>
-<header><h1>GARRA FC · PLANTEL COMPLETO</h1><select id="mode" aria-label="Animación"><option value="jog">Trote</option><option value="sprint" selected>Sprint</option><option value="idle">Reposo</option><option value="kick">Tiro</option><option value="pass">Pase</option><option value="slide">Barrida</option><option value="gk_dive">Estirada</option><option value="celebrate">Festejo</option></select><span id="stats">Cargando modelo riggeado…</span><small>22 jugadores · un renderer compartido</small></header>
+<header><h1>GARRA FC · PLANTEL COMPLETO</h1><select id="mode" aria-label="Animación"><option value="jog">Trote</option><option value="sprint" selected>Sprint</option><option value="idle">Reposo</option><option value="kick">Tiro</option><option value="pass">Pase</option><option value="slide">Barrida</option><option value="gk_dive">Estirada</option><option value="celebrate">Festejo</option><option value="fall0">Piscinazo</option><option value="fall1">Voltereta</option><option value="fall2">Rodando</option><option value="fall3">Sentón</option><option value="fall4">Trompo</option><option value="fall5">Drama</option><option value="collision">Choque de goma</option><option value="post">Plancha al poste</option><option value="goal">Gol: festejos</option><option value="cry">Gol: lágrimas</option></select><span id="stats">Cargando modelo riggeado…</span><small>22 jugadores · un renderer compartido</small></header>
 <canvas id="cv"></canvas><script>
 const cv=document.getElementById('cv'),g=cv.getContext('2d'),mode=document.getElementById('mode'),label=document.getElementById('stats');
+const fallSeeds=ToonFX.FALLS.map((_,v)=>{let seed=0;while(ToonFX.variant(seed,70)!==v)seed++;return seed;});
 let phase=0,last=performance.now(),sampleAt=last,frames=0,samples=[],ready=false;
 const actors=Array.from({length:22},(_,i)=>({id:i+1,phase:i*.7}));
 function resize(){const r=cv.getBoundingClientRect(),d=Math.min(2,devicePixelRatio||1);cv.width=r.width*d;cv.height=r.height*d;}addEventListener('resize',resize);resize();
@@ -15,12 +17,17 @@ function frame(now){requestAnimationFrame(frame);const dt=(now-last)/1000;last=n
  for(let i=0;i<12;i++){g.fillStyle=i%2?'#ffffff05':'#00000005';g.fillRect(i*cv.width/12,0,cv.width/12,cv.height);}
  g.strokeStyle='#ffffff88';g.lineWidth=2;g.strokeRect(25,20,cv.width-50,cv.height-40);
  g.beginPath();g.moveTo(cv.width/2,20);g.lineTo(cv.width/2,cv.height-20);g.stroke();
- const scale=Math.min(cv.width/600,cv.height/210),name=mode.value;
+ const columns=innerWidth<600?4:11,rows=Math.ceil(22/columns),scale=Math.min(cv.width/columns/100,cv.height/rows/90),name=mode.value;
  for(let i=0;i<22;i++){
-  const col=i%11,row=Math.floor(i/11),x=(col+.4)*cv.width/11,y=cv.height*(row===0?.38:.8),speed=name==='sprint'?3.45:name==='jog'?2.5:0;
-  const st=name==='slide'?'slide':name==='gk_dive'?'dive':'run',flags=name==='kick'?4:name==='pass'?36:name==='sprint'?2:0;
+  const col=i%columns,row=Math.floor(i/columns),x=(col+.5)*cv.width/columns,y=(row+.75)*cv.height/rows,speed=name==='sprint'?3.45:name==='jog'?2.5:0;
+  const tick=phase*60,start=Math.floor(tick/110)*110,age=tick-start,fx={tick,team:row};
+  if(name.startsWith('fall')&&age<88)fx.fall={tick:start,duration:70,seed:fallSeeds[+name.slice(-1)],dx:1,dy:0,power:1};
+  if(name==='collision'&&age<24)fx.hit={tick:start,id:i+1,dx:col%2?1:-1,dy:0};
+  if(name==='post'&&age<42)fx.post={tick:start,x:-12,y:0};
+  if(name==='goal'||name==='cry')fx.goal={tick:start,team:name==='goal'?row:1-row,celebrants:actors.map(a=>a.id)};
+  const st=fx.fall?'down':name==='slide'?'slide':name==='gk_dive'?'dive':'run',flags=name==='kick'?4:name==='pass'?36:name==='sprint'?2:0;
   g.save();g.translate(x,y);g.scale(scale,scale);g.fillStyle='#0004';g.beginPath();g.ellipse(0,1,6,2.3,0,0,Math.PI*2);g.fill();
-  FootballPlayer3D.draw(g,{id:i+1,st,flags,face:Math.PI/2+.3*Math.sin(phase*.3+i*.2)},{id:i+1,kind:col===0?'gk':'field'}, {c1:col===0?'#b694ff':row===0?'#7cc0ea':'#ffdc1f',sh:row===0?'#17202b':'#204db0',so:'#f2f2f2'}, {speed,run:speed?1:0,sprint:name==='sprint'?1:0},{time:now,celebrate:name==='celebrate'});
+  FootballPlayer3D.draw(g,{id:i+1,x:0,y:0,st,flags,face:Math.PI/2+.3*Math.sin(phase*.3+i*.2)},{id:i+1,kind:i%11===0?'gk':'field'}, {c1:i%11===0?'#b694ff':i<11?'#7cc0ea':'#ffdc1f',sh:i<11?'#17202b':'#204db0',so:'#f2f2f2'}, {speed,run:speed?1:0,sprint:name==='sprint'?1:0},{time:now,fx,celebrate:name==='celebrate'});
   g.fillStyle='white';g.font='3px system-ui';g.textAlign='center';g.fillText(String(i+1).padStart(2,'0'),0,9);g.restore();
  }
  if(ready){frames++;samples.push(dt*1000);if(now-sampleAt>=2000){const fps=frames*1000/(now-sampleAt),sorted=samples.slice().sort((a,b)=>a-b),p95=sorted[Math.floor(sorted.length*.95)]||0,stats=FootballPlayer3D.stats();label.textContent=`${fps.toFixed(1)} FPS · p95 ${p95.toFixed(1)} ms · ${stats.players} modelos · ${stats.mixers} mixers · ${stats.renderers} renderer`;label.dataset.fps=fps.toFixed(2);label.dataset.p95=p95.toFixed(2);label.dataset.players=stats.players;label.dataset.renders=stats.renders;frames=0;samples=[];sampleAt=now;}}

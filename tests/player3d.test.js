@@ -1,6 +1,6 @@
 'use strict';
 const assert=require('node:assert/strict');
-const {selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CLIPS,CONFIG,CROSSFADE}=require('../public/player3d');
+const {selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CLIPS,CONFIG,CROSSFADE,CADENCE}=require('../public/player3d');
 assert.equal(CROSSFADE,.15);
 for(const [p,a,o,expected] of [
  [{st:'run',flags:0},{speed:0},{},'idle'],
@@ -48,10 +48,10 @@ class Mixer {
 const clips=Object.fromEntries(CLIPS.map(name=>[name,{name,duration:.8,tracks:[{name:'Hips.quaternion'}]}]));
 const actor={actions:Object.fromEntries(CLIPS.map(name=>[name,new Action(clips[name])])),mixer:{update(){}},referenceSpeed:{jog:150,sprint:207}};
 updateAction(actor,{st:'run',flags:0},{speed:2.5},{},1/60);
-assert.equal(actor.current,'jog');assert.equal(actor.action.rate,1);
+assert.equal(actor.current,'jog');assert.equal(actor.action.rate,CADENCE);
 updateAction(actor,{st:'run',flags:2},{speed:3.45},{},1/60);
-assert.equal(actor.current,'sprint');assert.equal(actor.action.rate,1);assert.equal(actor.action.fade.time,.15);
-updateAction(actor,{st:'run',flags:2},{speed:1.725},{},1/60);assert.equal(actor.action.rate,.5);
+assert.equal(actor.current,'sprint');assert.equal(actor.action.rate,CADENCE);assert.equal(actor.action.fade.time,.15);
+updateAction(actor,{st:'run',flags:2},{speed:1.725},{},1/60);assert.equal(actor.action.rate,CADENCE*.5);
 updateAction(actor,{st:'run',flags:4},{speed:0},{},1/60);
 const kick=actor.action;
 updateAction(actor,{st:'run',flags:0},{speed:2.5},{},1/60);assert.equal(actor.action,kick,'no cortar el golpe al caer el flag');

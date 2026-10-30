@@ -130,7 +130,21 @@ function claimBot(room, sid) {
   Object.assign(p, { sid, name: m.name, num: m.num, aiDir: null, input: 0, aiHold: 0 });
 }
 
-function emitEv(room, ev) { room.events.push(ev); }
+function emitEv(room, ev) {
+  ev={tick:room.tick,...ev};room.events.push(ev);
+  if(ev.fall||['goal','shoulder','post','shot'].includes(ev.type)||ev.faceHit){
+    let history=visualHistory.get(room);
+    if(!history){history=[];visualHistory.set(room,history);}
+    history.push(ev);while(history.length&&(room.tick-history[0].tick>600||history.length>512))history.shift();
+  }
+}
+// Metadatos de dibujo: no consumen azar ni modifican el estado físico.
+const visualContacts=new WeakMap(),visualHistory=new WeakMap();
+function fallFX(room, s, o, duration) {
+  const dx=o.x-s.x,dy=o.y-s.y,d=Math.hypot(dx,dy)||1;
+  return {seed:(Math.imul(room.tick,31)^Math.imul(o.id,131)^s.id)>>>0,duration,
+    dx:r1(dx/d),dy:r1(dy/d),power:r1(Math.min(1,Math.hypot(s.vx,s.vy)/7.2))};
+}
 
 function roomInfo(r) {
   return {
@@ -142,11 +156,12 @@ function broadcastRoom(r) { io.to(r.code).emit('room', roomInfo(r)); }
 function emitRoster(r) {
   io.to(r.code).emit('roster', r.players.map(p => ({
     id: p.id, team: p.team, kind: p.kind, name: p.name, num: p.num, sid: p.sid,
-  })));
+  })),visualHistory.get(r)||[]);
 }
 
 // ---------- Flujo del partido ----------
 function startMatch(room) {
+  visualHistory.delete(room);visualContacts.delete(room);
   buildRoster(room);
   room.score = [0, 0];
   room.timeLeft = room.minutes * 60 * TICK;
@@ -230,7 +245,9 @@ function goal(room, team) {
   // Un roce del arquero o un desvío del defensor no convierte en autogol el remate del rival.
   const last = room.players.find(p => p.id === b.lastPlayer), kicker = room.players.find(p => p.id === b.kicker);
   const scorer = last && last.team !== team && kicker && kicker.team === team ? kicker : last;
-  emitEv(room, { type: 'goal', team, scorer: scorer ? scorer.name : '', own: !!scorer && scorer.team !== team, score: room.score });
+  const leader=scorer?.team===team?scorer:room.players.find(p=>p.team===team&&p.kind==='field');
+  const celebrants=room.players.filter(p=>p.team===team&&leader&&dist(p.x,p.y,leader.x,leader.y)<180).map(p=>p.id);
+  emitEv(room, { type: 'goal', scorerId:scorer?.id||0,celebrants,team, scorer: scorer ? scorer.name : '', own: !!scorer && scorer.team !== team, score: room.score });
 }
 
 function outOfPlay(room, kind) {
@@ -243,12 +260,13 @@ function outOfPlay(room, kind) {
 }
 
 function foul(room, s, o) {
+  const fall=fallFX(room,s,o,70);
   o.st = 'down'; o.stT = 70; o.vx *= 0.3; o.vy *= 0.3; o.charging = false;
   s.vx *= 0.3; s.vy *= 0.3;
   const fx = clamp(o.x, 5, W - 5), fy = clamp(o.y, 5, H - 5);
   const defLeft = s.team === 0;
   const inBox = fy > BOX_TOP && fy < BOX_BOT && (defLeft ? fx < BOX_D : fx > W - BOX_D);
-  emitEv(room, { type: 'foul', id: s.id, victim: o.id, x: fx, y: fy, pen: inBox });
+  emitEv(room, { type: 'foul', id: s.id, victim: o.id, x: fx, y: fy, pen: inBox, fall });
   room.ball.owner = null;
   if (inBox) setPiece(room, 'penalty', o.team, defLeft ? PEN_SPOT : W - PEN_SPOT, CY);
   else setPiece(room, 'free', o.team, fx, fy);
@@ -713,7 +731,7 @@ function checkGoalFrame(room, prevX) {
       if (b.owner) b.owner = null;
       b.vx = (b.vx - 2 * dot * nx) * 0.7; b.vy = (b.vy - 2 * dot * ny) * 0.7;
       b.x = gx + nx * 6; b.y = gy + ny * 6;
-      emitEv(room, { type: 'post' });
+      emitEv(room, { type: 'post', ...postFX(room,gx,gy) });
     }
   }
   // Línea de gol: travesaño / gol
@@ -723,7 +741,7 @@ function checkGoalFrame(room, prevX) {
     const inMouth = b.y > GOAL_TOP && b.y < GOAL_BOT;
     if (inMouth && b.z >= GOAL_H - 2 && b.z <= GOAL_H + 4) {
       b.x = gx - s; b.vx = -b.vx * 0.6; b.vz = Math.abs(b.vz) * 0.4 + 1;
-      emitEv(room, { type: 'post', bar: true });
+      emitEv(room, { type: 'post', bar: true, ...postFX(room,gx,b.y) });
       return;
     }
     if (inMouth && b.z < GOAL_H - 2 && room.state === 'play') return goal(room, s < 0 ? 1 : 0);
@@ -731,6 +749,12 @@ function checkGoalFrame(room, prevX) {
   if (room.state !== 'play') return;
   if (b.y < -BALL_R * 2 || b.y > H + BALL_R * 2) return outOfPlay(room, 'throw');
   if (b.x < -BALL_R * 2 || b.x > W + BALL_R * 2) return outOfPlay(room, 'line');
+}
+
+// El palo avisa al renderer de un arquero cercano; nunca altera su estado dive/run.
+function postFX(room,x,y){
+  const keeper=room.players.find(p=>p.kind==='gk'&&dist(p.x,p.y,x,y)<95);
+  return {x:r1(x),y:r1(y),keeper:keeper?.id||0};
 }
 
 function checkTouches(room) {
@@ -776,6 +800,7 @@ function checkTouches(room) {
   if (spd > 12.5 && Math.random() < 0.35) {
     b.vx = -b.vx * 0.25 + rnd(-2, 2); b.vy = -b.vy * 0.25 + rnd(-2, 2);
     p.touchCool = 10;
+    emitEv(room, {type:'skill',id:p.id,faceHit:p.id,name:'¡PLOP!'});
     return;
   }
   b.owner = p; b.z = 0; b.vz = 0;
@@ -804,7 +829,7 @@ function checkSlides(room) {
       if (o.team === s.team || o.st === 'down' || o.st === 'slide') continue;
       if (dist(footX, footY, o.x, o.y) > 15 && dist(s.x, s.y, o.x, o.y) > 14) continue;
       if (o.st === 'spin' || o.st === 'croq') continue;
-      if (s.slideClean) { o.st = 'down'; o.stT = 30; o.charging = false; if (b.owner === o) b.owner = null; continue; }
+      if (s.slideClean) { emitEv(room, {type:'tackle',id:s.id,victim:o.id,x:r1(o.x),y:r1(o.y),fall:fallFX(room,s,o,30)}); o.st = 'down'; o.stT = 30; o.charging = false; if (b.owner === o) b.owner = null; continue; }
       return foul(room, s, o);
     }
   }
@@ -819,6 +844,13 @@ function collidePlayers(room) {
     if (d >= PR * 2 || d === 0) continue;
     const nx = dx / d, ny = dy / d, ov = PR * 2 - d;
     const sa = Math.hypot(a.vx, a.vy), sc = Math.hypot(c.vx, c.vy);
+    let contacts=visualContacts.get(room);
+    if(!contacts){contacts=new Map();visualContacts.set(room,contacts);}
+    const pair=a.id+':'+c.id;
+    if(sa+sc>1.4&&room.tick-(contacts.get(pair)??-100)>24){
+      contacts.set(pair,room.tick);
+      emitEv(room,{type:'shoulder',id:a.id,victim:c.id,visualOnly:true,x:r1((a.x+c.x)/2),y:r1((a.y+c.y)/2),dx:r1(nx),dy:r1(ny)});
+    }
     const wa = (sc + 0.5) / (sa + sc + 1); // el más rápido empuja más (inercia)
     a.x -= nx * ov * wa; a.y -= ny * ov * wa;
     c.x += nx * ov * (1 - wa); c.y += ny * ov * (1 - wa);
@@ -838,7 +870,7 @@ function shoulder(room, a, c, sa, sc) {
   if (Math.random() < chance) {
     b.owner = ch; b.lastTeam = ch.team; b.lastPlayer = ch.id;
     owner.st = 'recover'; owner.stT = 12; owner.charging = false;
-    emitEv(room, { type: 'shoulder', id: ch.id });
+    emitEv(room, { type: 'shoulder', id: ch.id, victim:owner.id, x:r1(owner.x),y:r1(owner.y),dx:r1((owner.x-ch.x)/Math.max(1,dist(owner.x,owner.y,ch.x,ch.y))),dy:r1((owner.y-ch.y)/Math.max(1,dist(owner.x,owner.y,ch.x,ch.y))) });
   }
 }
 

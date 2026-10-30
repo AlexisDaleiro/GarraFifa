@@ -1,6 +1,9 @@
 /* Three.js r184. Geometría y texturas compartidas; esqueleto, materiales y mixer por jugador. */
 (function (root) {
   'use strict';
+  const FX=typeof module!=='undefined'?require('./toon-fx'):root.ToonFX;
+  const CADENCE=1.55;
+  const ATLAS={columns:6,rows:4,tileW:72,tileH:80,base:20};
   const CROSSFADE = 0.15;
   const CLIPS = ['idle','jog','sprint','kick','pass','slide','gk_dive','celebrate'];
   const ONCE = new Set(['kick','pass','slide','gk_dive']);
@@ -11,6 +14,8 @@
     referenceSpeed:{jog:150,sprint:207} };
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
   function selectClip(p,anim={},options={}) {
+    if(options.fx?.goal)return options.fx.goal.team===options.fx.team&&options.fx.goal.celebrants?.includes(p.id)&&FX.hash(p.id+options.fx.goal.tick)%4===1?'celebrate':'idle';
+    if(options.fx?.fall||p.st==='down') return 'idle';
     if(options.celebrate) return 'celebrate';
     if(p.st==='dive') return 'gk_dive';
     if(['slide','down','recover'].includes(p.st)) return 'slide';
@@ -57,7 +62,7 @@
     }
     const locomotion=name==='jog'||name==='sprint';
     // anim.speed está en unidades/tick del servidor de 60 Hz.
-    actor.action.setEffectiveTimeScale(locomotion?(Math.max(0,anim.speed||0)*60/actor.referenceSpeed[name]):1);
+    actor.action.setEffectiveTimeScale(locomotion?(Math.max(0,anim.speed||0)*60/actor.referenceSpeed[name]*CADENCE):1);
     actor.mixer.update(Math.max(0,dt));
     actor.retiring=(actor.retiring||[]).filter(fade=>{
       if(fade.action===actor.action) return false;
@@ -93,9 +98,10 @@
   function stylize(THREE,shared,actor) {
     const {object}=actor,inks=shared.inks,v=new THREE.Vector3();
     object.updateMatrixWorld(true);
-    const skinned=[];actor.bones=[];
+    const skinned=[];actor.bones=[];actor.identity=FX.identity(actor.info.id||0);
     object.traverse(n=>{
-      if(n.isSkinnedMesh&&!/eye|brow/i.test(n.name)) skinned.push(n);
+      if(n.isMesh&&n.name==='Hair')n.visible=false;
+      if(n.isSkinnedMesh&&!/eye|brow|hair/i.test(n.name)) skinned.push(n);
       if(n.isBone&&CARICATURE[n.name]) actor.bones.push([n,CARICATURE[n.name]]);
     });
     for(const mesh of skinned) {
@@ -116,19 +122,32 @@
     const part=(mat,pos,size)=>{
       const m=new THREE.Mesh(shared.sphere,mat),o=new THREE.Mesh(shared.sphere,shared.ink);
       m.position.set(...pos);m.scale.set(...size);o.position.copy(m.position);o.scale.copy(m.scale).multiplyScalar(1.22);
-      face.add(o,m);
+      face.add(o,m);return {m,o};
     };
     // Medidas del hueso Head sin escalar: cara a ~1.5 al frente, centro de la cabeza ~2.5 arriba.
+    actor.features={pupils:[],brows:[],tears:[],spirals:[]};
     for(const side of [-1,1]) {
       part(shared.eye,[side*0.5,2.35,1.3],[0.48,0.56,0.34]);
-      part(shared.pupil,[side*0.45,2.3,1.62],[0.22,0.26,0.08]);
+      actor.features.pupils.push(part(shared.pupil,[side*0.45,2.3,1.62],[0.22,0.26,0.08]));
+      actor.features.brows.push(part(shared.pupil,[side*.5,3.02,1.4],[.5,.09,.12]));
+      actor.features.tears.push(part(shared.tear,[side*.65,1.65,1.6],[.18,.6,.13]));
+      const spiral=new THREE.Line(shared.spiral,shared.spiralInk);spiral.position.set(side*.5,2.35,1.73);face.add(spiral);actor.features.spirals.push(spiral);
       part(skin,[side*1.45,2.0,0.2],[0.32,0.65,0.42]);
     }
     part(skin,[0,1.75,1.75],[0.5,0.52,0.72]);
+    actor.features.mouth=part(shared.pupil,[0,1.05,1.5],[.48,.16,.15]);
+    actor.features.teeth=part(shared.eye,[0,1.1,1.65],[.38,.1,.05]);
+    const hair=actor.materials.find(m=>m.role==='hair')?.material||shared.pupil;
+    const tuft=(pos,size,mat=hair)=>{const mesh=new THREE.Mesh(shared.tuft,mat);mesh.position.set(...pos);mesh.scale.set(...size);face.add(mesh);return mesh;};
+    const style=actor.identity.hair;
+    if(style===0)for(let i=0;i<7;i++){const a=i*Math.PI/3;tuft([Math.cos(a)*1.2,3.9+Math.sin(a)*.3,.1+Math.sin(a)*.8],[.85,.85,.8]);}
+    if(style===1)for(let i=0;i<4;i++)tuft([0,4.1,-.8+i*.6],[.28,1.05,.42]);
+    if(style===2){tuft([0,3.65,0],[1.45,.7,1.25],skin);tuft([-.5,4.17,.5],[.45,.12,.35],shared.eye);}
+    if(style===3)for(const side of [-1,1]){const mesh=tuft([side*.48,1.4,1.94],[.65,.24,.18]);mesh.rotation.z=side*.25;}
   }
   function createBackend(THREE,clone,asset,clips,config=CONFIG,rendererFactory) {
     const actors=new Map(),scene=new THREE.Scene();
-    const columns=6,rows=4,tileW=72,tileH=64,resolution=3;
+    const {columns,rows,tileW,tileH,base}=ATLAS,resolution=3;
     const renderer=rendererFactory?rendererFactory():new THREE.WebGLRenderer({alpha:true,antialias:true,preserveDrawingBuffer:true});
     renderer.setPixelRatio(1);renderer.setSize(columns*tileW*resolution,rows*tileH*resolution,false);
     renderer.setClearColor(0,0);renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -140,7 +159,10 @@
     const toon=!!THREE.MeshToonMaterial,shared={inks:new Map()};
     if(toon) {
       toonify(THREE,asset);
-      Object.assign(shared,{sphere:new THREE.SphereGeometry(1,14,10),ink:inkMaterial(THREE,0,false),
+      Object.assign(shared,{sphere:new THREE.SphereGeometry(1,14,10),tuft:new THREE.SphereGeometry(1,8,6),ink:inkMaterial(THREE,0,false),
+        tear:new THREE.MeshBasicMaterial({color:'#6de6ff'}),
+        spiralInk:new THREE.LineBasicMaterial({color:INK}),
+        spiral:new THREE.BufferGeometry().setFromPoints(Array.from({length:28},(_,i)=>{const a=i*.48,r=i/65;return new THREE.Vector3(Math.cos(a)*r,Math.sin(a)*r,0);})),
         eye:new THREE.MeshBasicMaterial({color:'#fbf6ea'}),pupil:new THREE.MeshBasicMaterial({color:INK})});
     }
     const box=new THREE.Box3().setFromObject(asset),size=box.getSize(new THREE.Vector3());
@@ -161,8 +183,8 @@
       const object=clone(asset),pivot=new THREE.Group(),slot=new THREE.Group();
       object.scale.setScalar(scale);object.position.set(-center.x*scale,-box.min.y*scale,-center.z*scale);
       pivot.rotation.x=0.48; // La misma vista elevada de la cancha; no se modifica su cámara.
-      pivot.add(object);slot.add(pivot);scene.add(slot);
-      const index=available.shift();slot.position.set((index%columns)*tileW+tileW/2,(rows-1-Math.floor(index/columns))*tileH+12,0);
+      const motion=new THREE.Group();motion.add(object);pivot.add(motion);slot.add(pivot);scene.add(slot);
+      const index=available.shift();slot.position.set((index%columns)*tileW+tileW/2,(rows-1-Math.floor(index/columns))*tileH+base,0);
       const materials=[],copies=new Map();
       object.traverse(mesh=>{
         if(!mesh.isMesh) return;
@@ -182,8 +204,9 @@
         action.setLoop(ONCE.has(name)?THREE.LoopOnce:THREE.LoopRepeat,ONCE.has(name)?1:Infinity);
         action.clampWhenFinished=ONCE.has(name);actions[name]=action;
       }
-      const actor={key,index,object,pivot,slot,mixer,actions,materials,referenceSpeed:speed,info,current:null,action:null,lastSeen:0,signature:'',bones:[]};
+      const actor={key,index,object,pivot,motion,slot,mixer,actions,materials,referenceSpeed:speed,info,baseY:object.position.y,current:null,action:null,lastSeen:0,signature:'',bones:[]};
       if(toon) stylize(THREE,shared,actor);
+      actor.rig={};object.traverse(n=>{if(n.isBone)actor.rig[n.name]={bone:n,q:n.quaternion.clone(),scale:n.scale.clone()};});
       actors.set(key,actor);return actor;
     }
     function tint(actor,kit,info) {
@@ -207,10 +230,16 @@
         if(time-actor.lastSeen>10000){remove(actor);continue;}
         if(!actor.state) continue;
         const {p,anim,options}=actor.state;
+        for(const r of Object.values(actor.rig)){r.bone.quaternion.copy(r.q);r.bone.scale.copy(r.scale);}
         updateAction(actor,p,anim,options,delta);
         for(const [bone,s] of actor.bones) bone.scale.setScalar(s); // Después del mixer, por si un clip anima escala.
+        if(actor.identity)for(const [name,r] of Object.entries(actor.rig)){
+          const body=actor.identity.body,factor=/^spine_0[12]$/.test(name)?body.spine:/^thigh_/.test(name)?body.leg:/^upperarm_/.test(name)?body.arm:null;
+          if(factor)r.bone.scale.set(r.scale.x*factor[0],r.scale.y*factor[1],r.scale.z*factor[2]);
+        }
         const face=anim.moveFace===undefined||anim.speed<0.12?p.face:anim.moveFace;
         actor.object.rotation.y=Math.PI/2-face;
+        applyProcedural(actor,p,options);
       }
       renderer.render(scene,camera);renderCount++;
     }
@@ -228,11 +257,103 @@
       if(fresh) render(time);
       // Las casillas nuevas aparecen al siguiente cuadro; la animación del resto se renderiza una sola vez.
       const x=(actor.index%columns)*tileW*resolution,y=Math.floor(actor.index/columns)*tileH*resolution;
-      g.imageSmoothingEnabled=true;g.drawImage(renderer.domElement,x,y,tileW*resolution,tileH*resolution,-tileW/2,12-tileH,tileW,tileH);
+      const visual=actor.visual||{x:0,y:0};
+      g.imageSmoothingEnabled=true;g.drawImage(renderer.domElement,x,y,tileW*resolution,tileH*resolution,-tileW/2+visual.x,base-tileH+visual.y*.78,tileW,tileH);
     }
     function dispose(){for(const actor of Array.from(actors.values()))remove(actor);renderer.dispose();}
     function stats(){return {players:actors.size,mixers:actors.size,renderers:1,renders:renderCount,lastFrameSeconds:lastDt,warnings:[...warnings]};}
     return {draw,dispose,stats,actors,renderer};
+  }
+  // Todo el movimiento cómico se aplica después del mixer y se restaura cada cuadro.
+  function applyProcedural(actor,p,options) {
+    const f=options.fx?.fall,tick=options.fx?.tick||0,m=actor.motion;
+    m.rotation.order='YXZ';m.rotation.x=m.rotation.y=m.rotation.z=0;m.position.set(0,0,0);m.scale.setScalar(1);
+    actor.visual={x:0,y:0};actor.object.position.y=actor.baseY;
+    updateFace(actor,p,options);
+    if(options.fx?.goal){applyCelebration(actor,p,options);return;}
+    if(!f){
+      const tick=options.fx?.tick||0,shot=options.fx?.shot;
+      const jump=p.st==='rainbow'?Math.sin((p.stT||0)*.15)*3:shot?Math.sin(clamp((tick-shot.tick)/25,0,1)*Math.PI)*3:0;
+      const sy=1+Math.max(0,jump)*.06;m.position.y=Math.max(0,jump);m.scale.set(1/Math.sqrt(sy),sy,1/Math.sqrt(sy));
+      applyReaction(actor,p,options);
+      return;
+    }
+    const pose=FX.fallPose(f,tick),age=tick-f.tick;
+    const recovery=age>f.duration?1-clamp((age-f.duration)/18,0,1):1;
+    const bend=(name,x,y,z)=>{const b=actor.rig[name]?.bone;if(b){b.rotation.x+=x;b.rotation.y+=y;b.rotation.z+=z;}};
+    // El centro de giro queda en la cintura, para apoyar el cuerpo en el césped.
+    m.position.y=(15-pose.drop+pose.height)*recovery;
+    actor.object.position.y=actor.baseY-15*recovery;
+    const short=a=>Math.atan2(Math.sin(a),Math.cos(a)),recovering=age>=f.duration;
+    m.rotation.order=pose.variant===2?'YZX':'YXZ';
+    m.rotation.x=(recovering?short(pose.rx):pose.rx)*recovery;m.rotation.z=(recovering?short(pose.rz):pose.rz)*recovery;
+    const heading=Math.PI/2-Math.atan2(f.dy,f.dx),target=Math.PI/2-p.face;
+    m.rotation.y=heading+short(target-heading)*(1-recovery)+(recovering?short(pose.ry):pose.ry)*recovery;
+    actor.object.rotation.y=0;
+    const sy=1+(pose.squash-1)*recovery;m.scale.set(1/Math.sqrt(sy),sy,1/Math.sqrt(sy));
+    actor.visual={x:f.dx*pose.distance*recovery,y:f.dy*pose.distance*recovery};
+    bend('upperarm_l',0,0,-pose.arms*recovery);bend('upperarm_r',0,0,pose.arms*recovery);
+    bend('thigh_l',pose.flail*recovery,0,0);bend('thigh_r',-pose.flail*recovery,0,0);
+    if(pose.variant===3){bend('thigh_l',-1.4*recovery,0,0);bend('thigh_r',-1.4*recovery,0,0);}
+    if(pose.variant===5){bend('lowerarm_l',-1.9*recovery,0,0);bend('thigh_l',-.9*recovery,0,0);}
+  }
+  function applyCelebration(actor,p,options){
+    const fx=options.fx,e=fx.goal,t=(fx.tick-e.tick)/60,m=actor.motion;
+    const bend=(name,x=0,z=0)=>{const b=actor.rig[name]?.bone;if(b){b.rotation.x+=x;b.rotation.z+=z;}};
+    const win=e.team===fx.team,near=e.celebrants?.includes(p.id),style=FX.hash(p.id+e.tick)%4;
+    const ramp=Math.min(1,t*4),exit=clamp((420-(fx.tick-e.tick))/24,0,1),weight=ramp*exit;
+    if(win){
+      if(!near){bend('upperarm_l',0,-.9*weight);bend('upperarm_r',0,.9*weight);return;}
+      if(style===0){ // Avioncito: torso inclinado y alas extendidas.
+        bend('upperarm_l',0,-1.5*weight);bend('upperarm_r',0,1.5*weight);
+        m.rotation.x=-.3*weight;m.rotation.z=Math.sin(t*4)*.18*weight;
+        actor.visual={x:Math.sin(t*2)*12*weight,y:Math.cos(t*2)*5*weight};
+      }else if(style===1){m.rotation.z=Math.sin(t*9)*.18*weight;}
+      else if(style===2){ // Panza al pasto, dentro de la pausa existente.
+        m.position.y=5*weight;actor.object.position.y=actor.baseY-15*weight;m.rotation.x=Math.PI/2*weight;
+        actor.visual={x:Math.cos(p.face)*Math.min(t*14,22)*weight,y:Math.sin(p.face)*Math.min(t*14,22)*weight};
+        bend('upperarm_l',0,-1.3*weight);bend('upperarm_r',0,1.3*weight);
+      }else{
+        const jump=Math.abs(Math.sin(t*6));m.position.y=jump*10*weight;
+        const sy=1+(.22*jump-.12)*weight;m.scale.set(1/Math.sqrt(sy),sy,1/Math.sqrt(sy));
+        bend('upperarm_l',-.8*weight,-1.1*weight);bend('upperarm_r',-.8*weight,1.1*weight);
+      }
+    }else{
+      const sad=FX.hash(p.id)%3;
+      if(sad===0){m.rotation.x=-Math.PI/2*weight;m.position.y=5*weight;actor.object.position.y=actor.baseY-15*weight;}
+      else if(sad===1){bend('spine_02',.45*weight);bend('Head',.4*weight);bend('upperarm_l',.3*weight);bend('upperarm_r',.3*weight);}
+      else{m.rotation.x=-Math.PI/2*weight;m.position.y=5*weight;actor.object.position.y=actor.baseY-15*weight;bend('thigh_l',Math.sin(t*16)*.8*weight);bend('thigh_r',-Math.sin(t*16)*.8*weight);}
+    }
+  }
+  function applyReaction(actor,p,options){
+    const fx=options.fx||{},tick=fx.tick||0,m=actor.motion;
+    if(p.st==='dive'){m.scale.set(1.25,.8,1.12);m.position.y+=3;}
+    if(fx.hit){
+      const hit=fx.hit,t=clamp((tick-hit.tick)/24,0,1),pulse=Math.sin(Math.PI*t),sign=hit.id===p.id?-1:1,sy=1-.28*Math.sin(Math.PI*clamp(t*2,0,1));
+      m.scale.set(1/Math.sqrt(sy),sy,1/Math.sqrt(sy));m.position.y+=pulse*5;
+      actor.visual={x:(hit.dx??1)*sign*pulse*8,y:(hit.dy||0)*sign*pulse*8};
+    }
+    if(fx.post){
+      const e=fx.post,t=clamp((tick-e.tick)/42,0,1),pulse=Math.sin(Math.PI*t),dx=e.x-p.x,dy=e.y-p.y,d=Math.hypot(dx,dy)||1;
+      actor.visual={x:dx/d*Math.min(d,18)*pulse,y:dy/d*Math.min(d,18)*pulse};
+      m.rotation.z=(dx<0?1:-1)*pulse*1.35;m.scale.set(1.28,1/1.28,1);m.position.y+=3*pulse;
+    }
+  }
+  function updateFace(actor,p,options) {
+    const face=actor.features;if(!face)return;
+    const fx=options.fx||{},cry=fx.goal&&fx.goal.team!==fx.team,dizzy=!!fx.fall||!!fx.daze,angry=p.st==='slide';
+    const open=!!(p.flags&4)||!!fx.shot,sprint=!!(p.flags&2),tick=fx.tick||0;
+    const shape=(part,x,y,z)=>{part.m.scale.set(x,y,z);part.o.scale.set(x*1.22,y*1.22,z*1.22);};
+    face.pupils.forEach((part,i)=>{
+      part.m.visible=part.o.visible=!dizzy;const side=i?1:-1;
+      part.m.position.x=side*(dizzy?.15:.45);part.o.position.x=part.m.position.x;
+      const brow=face.brows[i];brow.m.rotation.z=brow.o.rotation.z=angry?side*.45:cry?-side*.3:0;
+      const tear=face.tears[i];tear.m.visible=tear.o.visible=!!cry;
+      tear.m.position.y=tear.o.position.y=1.7-(tick%12)/18;
+      face.spirals[i].visible=dizzy;face.spirals[i].rotation.z=tick*.13;
+    });
+    shape(face.mouth,open?.52:cry?.4:.48,open?.6:cry?.35:sprint?.23:.13,.15);
+    face.teeth.m.visible=face.teeth.o.visible=sprint&&!open&&!cry;
   }
   function inPlace(THREE,clip,asset) {
     const result=clip.clone();
@@ -321,5 +442,5 @@
     dispose(){backend?.dispose();backend=null;loading=null;failure=null;lastDraw=null;},
   };
   root.FootballPlayer3D=api;
-  if(typeof module!=='undefined') module.exports={FootballPlayer3D:api,selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CROSSFADE,CLIPS,CONFIG};
+  if(typeof module!=='undefined') module.exports={FootballPlayer3D:api,selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CROSSFADE,CLIPS,CONFIG,CADENCE,ATLAS};
 })(typeof module!=='undefined'?module.exports:window);

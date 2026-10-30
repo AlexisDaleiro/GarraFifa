@@ -6,6 +6,7 @@
   const BOX_D = 160, BOX_TOP = 150, BOX_BOT = 490, PEN_SPOT = 115;
   const TICK_MS = 1000 / 60, INTERP = 4, VIEW_H = 360, FM = 110, FS = 2;
   const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, PASS: 128, SHOOT: 1024 };
+  const toon = ToonFX.create();
   const ST_NAMES = ['run', 'slide', 'recover', 'down', 'spin', 'croq', 'step', 'fake', 'rainbow', 'fooled', 'hold', 'dive'];
   const KEYMAP = {
     ArrowUp: B.UP, ArrowDown: B.DOWN, ArrowLeft: B.LEFT, ArrowRight: B.RIGHT, Space: B.SPRINT,
@@ -98,6 +99,9 @@
       tackle() { if (!ac) return; const t = ac.currentTime; osc(t, 'sine', 120, 40, 0.18, 0.7); noise(t, 0.08, 'lowpass', 900, 300, 0.7, 0.4); },
       thud() { if (ac) osc(ac.currentTime, 'sine', 95, 50, 0.16, 0.5); },
       swish() { if (ac) noise(ac.currentTime, 0.18, 'bandpass', 600, 2600, 2, 0.18, 0.02); },
+      fall() { if(ac) osc(ac.currentTime,'sine',1250,120,.48,.12,.02); },
+      boing() { if(!ac)return;const t=ac.currentTime;osc(t,'triangle',180,650,.08,.22);osc(t+.08,'sine',650,95,.4,.2); },
+      horn() { if(!ac)return;const t=ac.currentTime;for(const f of [220,277,330]){osc(t,'sawtooth',f,f*.93,.24,.045,.02);osc(t+.3,'square',f,f*.82,.55,.035,.02);} },
       post() {
         if (!ac) return;
         const t = ac.currentTime;
@@ -150,13 +154,14 @@
 
   socket.on('connect_error', () => msg('menuMsg', 'Sin conexión con el servidor…'));
   socket.on('disconnect', () => {
-    roomInfo = null; snaps = []; tickOffset = null;
+    roomInfo = null; snaps = []; tickOffset = null; toon.reset();
     show('menu');
     msg('menuMsg', 'Conexión perdida. Vuelve a entrar con el código.');
     audio.crowdStop();
   });
 
   socket.on('room', info => {
+    if(info.state==='lobby')toon.reset();
     roomInfo = info;
     $('roomCode').textContent = info.code;
     $('hudCode').textContent = info.code;
@@ -170,7 +175,8 @@
     renderLobby();
   });
 
-  socket.on('roster', list => {
+  socket.on('roster', (list,visual=[]) => {
+    for(const e of visual)toon.ingest(e,{t:e.tick});
     roster = new Map(list.map(p => [p.id, p]));
     const me = list.find(p => p.sid === socket.id);
     myPid = me ? me.id : 0;
@@ -201,13 +207,13 @@
   if (/^#[A-Za-z0-9]{4}$/.test(location.hash)) $('joinCode').value = location.hash.slice(1).toUpperCase();
 
   $('btnCreate').onclick = () => {
-    audio.init(); readProfile();
+    audio.init(); readProfile(); toon.reset();
     socket.emit('create', { mode: +$('mode').value, minutes: +$('minutes').value, profile }, onJoined);
   };
   $('btnJoin').onclick = () => {
     const code = $('joinCode').value.trim().toUpperCase();
     if (code.length !== 4) return msg('menuMsg', 'El código tiene 4 caracteres');
-    audio.init(); readProfile();
+    audio.init(); readProfile(); toon.reset();
     socket.emit('join', { code, profile }, onJoined);
   };
   $('joinCode').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnJoin').click(); });
@@ -346,7 +352,7 @@
   cv.addEventListener('contextmenu', e => e.preventDefault());
   cv.addEventListener('mousedown', () => audio.init());
 
-  // Controles táctiles (visibles solo con pointer: coarse vía CSS)
+  // Controles táctiles (visibles con puntero táctil o ventana angosta vía CSS)
   const DIRS = B.UP | B.DOWN | B.LEFT | B.RIGHT;
   function setDir(mask) {
     const nb = (bits & ~DIRS) | mask;
@@ -535,11 +541,13 @@
   // ---------- Jugadores: mallas 3D articuladas, proyectadas sobre la cancha ----------
   function drawPlayer(g, p, info, a) {
     if (!info) return;
+    const fx=toon.options(p,info,renderTick,curState);
     g.save(); g.translate(p.x, p.y); g.scale(1, 1 / TILT);
     FootballPlayer3D.draw(g, p, info, kitOf(info), a, {
-      time: performance.now(), celebrate: curState === 'goal' && info.team === celebrate,
+      time: performance.now(), fx,
     });
     g.restore();
+    toon.draw(g,p,a,fx);
   }
 
   function drawShadow(p, v) {
@@ -752,13 +760,17 @@
   }
 
   const cam = { x: CX, y: CY, shake: 0 };
-  let celebrate = -1, curState = ''; // equipo que festeja un gol (brazos arriba mientras dura el estado 'goal')
+  let curState = '', renderTick=0; // reloj visual de la simulación (también durante el replay)
   const GK_HINT = 'Apuntá · PASE (S) sacá · TIRO (D) despejá';
   const myTeam = () => { const me = roster.get(myPid); return me ? me.team : -1; };
 
   function handleEvent(e, s) {
+    const q=s.p.find(p=>p[0]===(e.victim||e.id));
+    toon.ingest({...e,x:e.x??q?.[1]??s.b[0],y:e.y??q?.[2]??s.b[1]},s);
+    if(e.fall) audio.fall();
     switch (e.type) {
       case 'start':
+        toon.reset();
         audio.whistle(1, 0.6); audio.crowdStart(); hideEnd(); stopReplay();
         banner('¡A JUGAR!', '', 'small', 1300);
         break;
@@ -784,18 +796,18 @@
       case 'dive': audio.swish(); break;
       case 'whistle': audio.whistle(1, 0.4); break;
       case 'post':
-        audio.post(); audio.ooh(); cam.shake = 4;
+        audio.post(); audio.boing(); audio.ooh(); cam.shake = 4;
         floater(e.bar ? '¡TRAVESAÑO!' : '¡AL PALO!', 0, s.b[0], s.b[1]);
         break;
       case 'goal':
-        audio.cheer(); audio.whistle(1, 0.5);
+        audio.cheer(); audio.horn(); audio.whistle(1, 0.5);
         banner(e.own ? '¡EN CONTRA!' : '¡GOLAZO!', e.scorer ? (e.own ? 'Autogol de ' : '') + e.scorer : '', 'goal t' + e.team, 2600);
         spawnConfetti(e.team);
-        cam.shake = 6; celebrate = e.team;
+        cam.shake = 6;
         scheduleReplay(s.t);
         break;
       case 'skill': audio.swish(); floater(e.name, e.id); break;
-      case 'shoulder': audio.thud(); floater('¡CARGA!', e.id); break;
+      case 'shoulder': audio.boing(); if(!e.visualOnly)floater('¡CARGA!', e.id); break;
       case 'save':
         audio.kick(0.6);
         floater(e.catch ? '¡ATAJADA!' : '¡QUÉ PARADA!', e.id);
@@ -869,6 +881,7 @@
       const sp = d > 40 || dt <= 0 ? 0 : d / dt;
       const blend = 1 - Math.pow(0.74, dt);
       const prevSpeed = a.speed;
+      if(prevSpeed>2&&sp<.6)a.stopTick=v.t;
       a.speed += (Math.min(sp, 6) - a.speed) * blend;
       a.accel = clamp((a.speed - prevSpeed) / Math.max(dt, 0.01), -1, 1);
       if (d > 0.02 && d < 40) a.moveFace = angLerp(a.moveFace ?? p.face, Math.atan2(dy, dx), blend);
@@ -959,14 +972,6 @@
         }
         ctx.restore();
       }
-      if (p.st === 'down') {
-        const t = performance.now() / 200, ang = Math.atan2(Math.sin(p.face) * TILT, Math.cos(p.face));
-        const hx = -Math.cos(ang) * 10.5, hy = -Math.sin(ang) * 10.5 - 8;
-        for (let i = 0; i < 3; i++) {
-          const a = t + (i * Math.PI * 2) / 3;
-          ell(ctx, hx + Math.cos(a) * 5, hy + Math.sin(a) * 2, 1.2, 1.2, '#ffd23f');
-        }
-      }
       if (p.st === 'fooled') {
         ctx.font = '400 9px "Bungee", sans-serif';
         ctx.fillStyle = '#fff';
@@ -1020,7 +1025,7 @@
     drawNet(0, -1);
     drawNet(W, 1);
 
-    curState = v.state;
+    curState = v.state; renderTick=v.t;
     updateAnims(v, dt);
     drawRings(dt);
     for (const p of v.players) drawShadow(p, v);
@@ -1040,6 +1045,7 @@
     drawParticles(dt);
     drawOverlays(v);
     drawFloaters(v, dt);
+    toon.drawComics(ctx,v.t);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     drawVignette();
     drawConfetti(dt);

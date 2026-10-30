@@ -299,7 +299,7 @@ kbd {
 .hint { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
 .tk { display: inline-block; font: 400 11px var(--font-title); background: var(--accent); color: var(--accent-ink); border-radius: 4px; padding: 1px 6px; }
 
-@media (pointer: coarse) {
+@media (pointer: coarse), (max-width: 860px) {
   .only-touch { display: block; }
   .only-keys { display: none; }
   #game { touch-action: none; user-select: none; -webkit-user-select: none; }
@@ -369,7 +369,7 @@ kbd {
   .help { top: 60px; left: 60px; right: 140px; max-width: none; max-height: calc(100vh - 80px); overflow: auto; z-index: 2; }
   .code-tag { display: none; }
 }
-@media (pointer: coarse) and (max-height: 420px) {
+@media (pointer: coarse) and (max-height: 420px), (max-width: 860px) and (max-height: 420px) {
   .stick { width: 116px; height: 116px; bottom: 12px; }
   .stick i { width: 50px; height: 50px; margin: -25px 0 0 -25px; }
   .tbtns { grid-template-columns: repeat(2, 72px); gap: 8px; bottom: 10px; }
@@ -385,5 +385,21 @@ kbd {
   .menu-cols { grid-template-columns: 1fr; }
   .track { width: 120px; }
   #radar { width: 150px; height: 96px; }
+  .replay-tag { top: 118px; }
   .code-tag { display: none; }
+}
+
+/* En vertical, radar y barras comparten una fila debajo del marcador. */
+@media (max-width: 600px) {
+  .bars { top: 78px; left: 12px; }
+  .bar span { width: 54px; }
+  .track { width: 90px; }
+  #radar { top: 76px; right: 12px; width: 108px; height: 69px; }
+  .thelp { left: 5px; top: 16px; width: 32px; height: 32px; }
+  .help { top: 156px; left: 12px; right: 12px; max-height: calc(100dvh - 176px); }
+  .replay-tag { top: 152px; }
+}
+@media (max-width: 360px) {
+  .stick { left: 12px; width: 110px; height: 110px; }
+  .tbtns { right: 12px; grid-template-columns: repeat(2, 72px); gap: 8px; }
 }
