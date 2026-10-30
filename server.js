@@ -8,7 +8,9 @@ const { TEAMS } = require('./public/teams.js');
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
 const server = http.createServer(app);
-const io = new Server(server);
+// pingTimeout alto: en el celular la pestaña se congela un rato al cambiar de app.
+const io = new Server(server, { pingTimeout: 45000 });
+const ROOM_GRACE_MS = 60000; // sala vacía por corte de conexión: se guarda para poder volver
 const PORT = process.env.PORT || 3000;
 
 // ---------- Mundo (unidades de juego; 1 unidad ~ 10 cm) ----------
@@ -149,7 +151,7 @@ function fallFX(room, s, o, duration) {
 function roomInfo(r) {
   return {
     code: r.code, host: r.host, mode: r.mode, minutes: r.minutes, state: r.state, score: r.score, teams: r.teams,
-    members: [...r.members].map(([id, m]) => ({ id, ...m })),
+    members: [...r.members].map(([id, { cid, ...m }]) => ({ id, ...m })),
   };
 }
 function broadcastRoom(r) { io.to(r.code).emit('room', roomInfo(r)); }
@@ -953,7 +955,7 @@ function snapshot(room) {
 io.on('connection', socket => {
   let room = null;
 
-  const leave = () => {
+  const leave = keep => {
     if (!room) return;
     const r = room;
     room = null;
@@ -961,18 +963,28 @@ io.on('connection', socket => {
     r.members.delete(socket.id);
     const pl = r.players.find(p => p.sid === socket.id);
     if (pl) { Object.assign(pl, { sid: null, name: 'CPU', input: 0, pressed: 0, released: 0 }); emitRoster(r); }
-    if (!r.members.size) { rooms.delete(r.code); return; }
+    if (!r.members.size) {
+      if (keep) r.dropT = setTimeout(() => { if (!r.members.size) rooms.delete(r.code); }, ROOM_GRACE_MS);
+      else rooms.delete(r.code);
+      return;
+    }
     if (r.host === socket.id) r.host = r.members.keys().next().value;
     broadcastRoom(r);
   };
 
-  const join = (r, profile) => {
+  const join = (r, profile, cid, pref) => {
+    // Misma pestaña que vuelve tras un corte: se va la conexión vieja para recuperar su lugar.
+    cid = typeof cid === 'string' ? cid.slice(0, 32) : '';
+    for (const [sid, m] of r.members) if (cid && m.cid === cid && sid !== socket.id) io.sockets.sockets.get(sid)?.disconnect(true);
+    clearTimeout(r.dropT);
     room = r;
     socket.join(r.code);
+    if (!r.hostCid) r.hostCid = cid;
+    if ((cid && cid === r.hostCid) || !r.members.has(r.host)) r.host = socket.id;
     const counts = [0, 0];
     for (const m of r.members.values()) counts[m.team]++;
-    const team = counts[0] <= counts[1] ? 0 : 1;
-    r.members.set(socket.id, { ...cleanProfile(profile), team });
+    const team = (pref === 0 || pref === 1) && counts[pref] < r.mode ? pref : counts[0] <= counts[1] ? 0 : 1;
+    r.members.set(socket.id, { ...cleanProfile(profile), team, cid });
     if (r.state !== 'lobby') { claimBot(r, socket.id); emitRoster(r); }
     broadcastRoom(r);
   };
@@ -984,7 +996,7 @@ io.on('connection', socket => {
     const mode = [1, 2, 3].includes(data.mode) ? data.mode : 2;
     const minutes = [3, 5].includes(data.minutes) ? data.minutes : 3;
     const r = newRoom(socket.id, mode, minutes);
-    join(r, data.profile);
+    join(r, data.profile, data.cid);
     cb({ ok: true, code: r.code });
   });
 
@@ -997,7 +1009,7 @@ io.on('connection', socket => {
     if (r.members.size >= 12) return cb({ ok: false, error: 'Sala llena' });
     if (room === r) return cb({ ok: true, code });
     leave();
-    join(r, data.profile);
+    join(r, data.profile, data.cid, data.team);
     cb({ ok: true, code });
   });
 
@@ -1051,8 +1063,8 @@ io.on('connection', socket => {
     p.input = bits;
   });
 
-  socket.on('leave', leave);
-  socket.on('disconnect', leave);
+  socket.on('leave', () => leave());
+  socket.on('disconnect', () => leave(true));
 });
 
 // ---------- Auto-prueba (npm test) ----------
@@ -1244,11 +1256,18 @@ else {
     last = now;
     for (const room of rooms.values()) {
       if (room.state === 'lobby' || room.state === 'ended') continue;
-      room.acc = Math.min(room.acc + elapsed, 250);
-      let stepped = false;
-      while (room.acc >= DT_MS) { room.acc -= DT_MS; step(room); stepped = true; }
-      if (stepped) io.to(room.code).emit('s', snapshot(room));
+      try {
+        room.acc = Math.min(room.acc + elapsed, 250);
+        let stepped = false;
+        while (room.acc >= DT_MS) { room.acc -= DT_MS; step(room); stepped = true; }
+        if (stepped) io.to(room.code).emit('s', snapshot(room));
+      } catch (e) {
+        // Un error en una sala no tira el servidor entero: esa sala vuelve al lobby.
+        console.error(`Error en sala ${room.code}:`, e);
+        room.state = 'lobby'; room.sp = null; broadcastRoom(room);
+      }
     }
   }, 4);
+  process.on('uncaughtException', e => console.error('Error no capturado:', e));
   server.listen(PORT, () => console.log(`Garra FC en http://localhost:${PORT}`));
 }

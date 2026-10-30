@@ -157,11 +157,25 @@
     history.replaceState(null, '', '#' + res.code);
   }
 
-  socket.on('connect_error', () => msg('menuMsg', 'Sin conexión con el servidor…'));
+  // cid identifica esta pestaña entre reconexiones; rejoin es la sala a la que volver si se corta.
+  const cid = Math.random().toString(36).slice(2);
+  let rejoin = null;
+  const netUI = () => { $('btnCreate').disabled = $('btnJoin').disabled = !socket.connected; };
+  netUI();
+  socket.on('connect', () => {
+    netUI();
+    if (!rejoin) return msg('menuMsg', '');
+    socket.emit('join', { ...rejoin, cid, profile }, res => {
+      if (res && res.ok) return msg('menuMsg', '');
+      rejoin = null;
+      msg('menuMsg', 'La sala ya no existe. Creá otra o entrá con otro código.');
+    });
+  });
+  socket.on('connect_error', () => msg('menuMsg', 'Sin conexión con el servidor. Reintentando…'));
   socket.on('disconnect', () => {
-    roomInfo = null; resetNetwork(); toon.reset();
+    roomInfo = null; resetNetwork(); toon.reset(); netUI();
     show('menu');
-    msg('menuMsg', 'Conexión perdida. Vuelve a entrar con el código.');
+    msg('menuMsg', rejoin ? `Se cortó la conexión. Volviendo a la sala ${rejoin.code}…` : 'Se cortó la conexión. Reconectando…');
     audio.crowdStop();
   });
 
@@ -169,6 +183,8 @@
     if(!roomInfo||roomInfo.teams[0]!==info.teams[0]||roomInfo.teams[1]!==info.teams[1])kitCache.clear();
     if(info.state==='lobby')toon.reset();
     roomInfo = info;
+    const mine = info.members.find(m => m.id === socket.id);
+    rejoin = { code: info.code, team: mine && mine.team };
     $('roomCode').textContent = info.code;
     $('hudCode').textContent = info.code;
     clearTimeout(endTimer);
@@ -215,13 +231,13 @@
   const goLandscape = () => { if (!matchMedia('(pointer: coarse)').matches) return; try { const fs = document.documentElement.requestFullscreen?.(); (fs || Promise.resolve()).then(() => screen.orientation?.lock?.('landscape')).catch(() => {}); } catch {} };
   $('btnCreate').onclick = () => {
     goLandscape(); audio.init(); readProfile(); toon.reset(); resetNetwork();
-    socket.emit('create', { mode: +$('mode').value, minutes: +$('minutes').value, profile }, onJoined);
+    socket.emit('create', { mode: +$('mode').value, minutes: +$('minutes').value, cid, profile }, onJoined);
   };
   $('btnJoin').onclick = () => {
     const code = $('joinCode').value.trim().toUpperCase();
     if (code.length !== 4) return msg('menuMsg', 'El código tiene 4 caracteres');
     goLandscape(); audio.init(); readProfile(); toon.reset(); resetNetwork();
-    socket.emit('join', { code, profile }, onJoined);
+    socket.emit('join', { code, cid, profile }, onJoined);
   };
   $('joinCode').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnJoin').click(); });
 
@@ -239,7 +255,7 @@
   $('btnBackLobby').onclick = () => socket.emit('toLobby');
   $('btnLeave').onclick = () => {
     socket.emit('leave');
-    roomInfo = null;
+    roomInfo = rejoin = null;
     history.replaceState(null, '', location.pathname);
     show('menu');
   };
