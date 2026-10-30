@@ -35,14 +35,14 @@
 
   // ---------- Audio sintetizado (Web Audio API) ----------
   const audio = (() => {
-    let ac = null, master = null, noiseBuf = null, crowd = null, muted = false;
+    let ac = null, master = null, noiseBuf = null, crowd = null, muted = !!store.get('garra-muted');
     function init() {
       if (ac) { if (ac.state === 'suspended') ac.resume(); return; }
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) return;
       ac = new AC();
       master = ac.createGain();
-      master.gain.value = 0.7;
+      master.gain.value = muted ? 0 : 0.7;
       master.connect(ac.destination);
       noiseBuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate);
       const d = noiseBuf.getChannelData(0);
@@ -77,7 +77,8 @@
     }
     return {
       init,
-      toggleMute() { muted = !muted; if (master) master.gain.value = muted ? 0 : 0.7; return muted; },
+      toggleMute() { muted = !muted; store.set('garra-muted', muted); if (master) master.gain.value = muted ? 0 : 0.7; return muted; },
+      get muted() { return muted; },
       whistle(n = 1, vol = 0.6) {
         if (!ac) return;
         let t = ac.currentTime;
@@ -190,13 +191,14 @@
     $('roomCode').textContent = info.code;
     $('hudCode').textContent = info.code;
     clearTimeout(endTimer);
-    if (info.state === 'lobby') { show('lobby'); hideEnd(); stopReplay(); audio.crowdStop(); }
+    if (info.state === 'lobby') { show('lobby'); hideEnd(); stopReplay(); audio.crowdStop(); setMenu(false); }
     else {
       if (!inGame()) show('game');
       if (info.state === 'ended') endTimer = setTimeout(showEnd, 1500);
       else hideEnd();
     }
     renderLobby();
+    renderPause();
   });
 
   socket.on('roster', (list,visual=[]) => {
@@ -265,6 +267,7 @@
     socket.emit('leave');
     roomInfo = rejoin = null;
     history.replaceState(null, '', location.pathname);
+    setMenu(false);
     show('menu');
   };
   $('btnCopy').onclick = () => {
@@ -365,10 +368,41 @@
   }
   function releaseAll() { if (bits) { bits = 0; socket.emit('input', 0); } }
 
+  // ---------- Menú de pausa ----------
+  // Online el partido no se frena para uno solo: abrir el menú suelta los controles.
+  // El anfitrión puede pausarlo de verdad para todos.
+  let menuOpen = false;
+  function setMenu(on) {
+    menuOpen = on;
+    if (on) releaseAll(); else $('help').classList.remove('show');
+    $('game').classList.toggle('menu-open', on);
+    $('pauseMenu').classList.toggle('show', on);
+    renderPause();
+  }
+  function renderPause() {
+    const r = roomInfo, host = !!r && r.host === socket.id, live = !!r && r.state !== 'lobby' && r.state !== 'ended';
+    const hostName = r && (r.members.find(m => m.id === r.host) || {}).name;
+    $('pausedTag').classList.toggle('show', !!r && r.paused && !menuOpen);
+    $('pausedBy').textContent = host ? 'tocá II para seguir' : `la pausó ${hostName || 'el anfitrión'}`;
+    $('btnPauseAll').style.display = $('btnEndMatch').style.display = host && live ? '' : 'none';
+    $('btnPauseAll').textContent = r && r.paused ? 'Reanudar para todos' : 'Pausar para todos';
+    $('btnSound').textContent = 'Sonido: ' + (audio.muted ? 'no' : 'sí');
+    $('pauseNote').textContent = r && r.paused ? 'Partido en pausa.' : 'El partido sigue corriendo: tu jugador queda quieto mientras estás acá.';
+  }
+  $('btnPause').addEventListener('click', () => setMenu(!menuOpen));
+  $('btnResume').onclick = () => setMenu(false);
+  $('btnPauseAll').onclick = () => socket.emit('pause', !(roomInfo && roomInfo.paused));
+  $('btnSound').onclick = () => { audio.init(); audio.toggleMute(); renderPause(); };
+  $('btnControls').onclick = () => $('help').classList.toggle('show');
+  $('btnEndMatch').onclick = () => { setMenu(false); socket.emit('toLobby'); };
+  $('btnQuit').onclick = () => $('btnLeave').click();
+
   addEventListener('keydown', e => {
     if (!inGame()) return;
+    if (e.code === 'Escape' || e.code === 'KeyP') { e.preventDefault(); return setMenu(!menuOpen); }
     if (e.code === 'KeyH') return $('help').classList.toggle('show');
-    if (e.code === 'KeyM') return audio.toggleMute();
+    if (e.code === 'KeyM') { audio.toggleMute(); return renderPause(); }
+    if (menuOpen) return;
     if (e.code === 'Enter' && replay) return stopReplay();
     const bit = KEYMAP[e.code];
     if (!bit) return;
@@ -434,7 +468,6 @@
   };
   stick.addEventListener('pointerup', stickUp);
   stick.addEventListener('pointercancel', stickUp);
-  $('btnHelp').addEventListener('click', () => $('help').classList.toggle('show'));
 
   // ---------- Interpolación ----------
   function sample(list,t){return (list===snaps?liveSampler:replaySampler).sample(list,t);}

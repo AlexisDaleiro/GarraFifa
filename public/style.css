@@ -309,8 +309,47 @@ kbd {
 .end-score { font: 400 56px var(--font-title); margin: 0; }
 .end-actions { display: flex; gap: 10px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
 
-.replay-tag,.help,.end { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .18s ease, visibility 0s .18s; }
-.replay-tag.show,.help.show,.end.show { opacity: 1; visibility: visible; transition-delay: 0s; }
+.pause {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(360px, calc(100vw - 32px));
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  text-align: center;
+  display: block;
+}
+.pause h2 { font: 400 26px var(--font-title); margin: 0 0 4px; color: var(--accent); }
+.pause-actions { display: grid; gap: 8px; }
+.pause.show { pointer-events: auto; }
+#game.menu-open .touch > :not(#btnPause) { visibility: hidden; }
+#game.menu-open .help { z-index: 13; }
+/* El botón de menú y el menú quedan por encima del aviso de girar: se puede salir aun en vertical. */
+#btnPause { z-index: 11; }
+.pause { z-index: 12; }
+.paused-tag {
+  position: absolute;
+  top: 30%;
+  left: 50%;
+  transform: translateX(-50%);
+  font: 400 18px var(--font-title);
+  background: #000c;
+  color: var(--accent);
+  padding: 8px 16px;
+  border-radius: 6px;
+  white-space: nowrap;
+  display: block;
+}
+@media (max-height: 420px) {
+  .pause { padding: 10px 14px; }
+  .pause h2 { font-size: 20px; }
+  .pause-actions { grid-template-columns: 1fr 1fr; gap: 6px; }
+  .pause-actions .btn { padding: 8px 10px; }
+}
+
+.replay-tag,.help,.end,.pause,.paused-tag { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .18s ease, visibility 0s .18s; }
+.replay-tag.show,.help.show,.end.show,.pause.show,.paused-tag.show { opacity: 1; visibility: visible; transition-delay: 0s; }
 /* ---------- Táctil ---------- */
 .only-touch { display: none; }
 .touch { display: block; position: absolute; inset: 0; pointer-events: none; opacity: 0; visibility: hidden; transition: opacity .18s, visibility 0s .18s; }

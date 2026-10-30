@@ -135,7 +135,7 @@
     <span id="sc1" class="goals">0</span>
     <span id="tn1" class="tname blue">VIS</span>
   </div>
-  <div class="code-tag">SALA <b id="hudCode">----</b> · <kbd>H</kbd> ayuda · <kbd>M</kbd> sonido</div>
+  <div class="code-tag">SALA <b id="hudCode">----</b> · <kbd>Esc</kbd> menú · <kbd>H</kbd> ayuda · <kbd>M</kbd> sonido</div>
   <div class="bars">
     <div class="bar">
       <span>GARRA</span>
@@ -154,7 +154,7 @@
       <b>Controles táctiles</b>
       <p>Joystick mover · PASE · TIRO (mantener) · SPRINT</p>
       <p>Rival con la pelota: PASE = BARRIDA. Compañero con la pelota: PASE la pide.</p>
-      <p>Tocá <b>?</b> para cerrar.</p>
+      <p>Tocá <b>Controles</b> otra vez en el menú para cerrar.</p>
     </div>
     <div class="only-keys">
     <b>Controles</b>
@@ -169,7 +169,7 @@
       <button data-b="SHOOT" class="big">TIRO</button>
       <button data-b="SPRINT" class="wide">SPRINT</button>
     </div>
-    <button id="btnHelp" class="thelp" aria-label="Ayuda">?</button>
+    <button id="btnPause" class="thelp" aria-label="Menú de pausa">II</button>
   </div>
   <div id="endScreen" class="end card">
     <h2>FINAL DEL PARTIDO</h2>
@@ -180,6 +180,19 @@
       <button id="btnBackLobby" class="btn">Volver al lobby</button>
     </div>
     <p id="endWait" class="msg">Esperando al anfitrión…</p>
+  </div>
+  <div id="pausedTag" class="paused-tag">II PAUSA · <span id="pausedBy"></span></div>
+  <div id="pauseMenu" class="pause card" role="dialog" aria-label="Menú de pausa">
+    <h2>MENÚ</h2>
+    <p id="pauseNote" class="hint"></p>
+    <div class="pause-actions">
+      <button id="btnResume" class="btn primary">Seguir jugando</button>
+      <button id="btnPauseAll" class="btn">Pausar para todos</button>
+      <button id="btnSound" class="btn">Sonido: sí</button>
+      <button id="btnControls" class="btn">Controles</button>
+      <button id="btnEndMatch" class="btn">Terminar partido</button>
+      <button id="btnQuit" class="btn ghost">Salir de la sala</button>
+    </div>
   </div>
   <div class="rotate" aria-live="polite">
     <svg viewBox="0 0 64 64" width="72" height="72" aria-hidden="true"><rect x="20" y="8" width="24" height="44" rx="4" fill="none" stroke="currentColor" stroke-width="4"/><path d="M8 40a24 24 0 0 0 20 18" fill="none" stroke="currentColor" stroke-width="4"/><path d="M22 52l7 6-8 4" fill="none" stroke="currentColor" stroke-width="4"/></svg>

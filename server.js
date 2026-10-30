@@ -162,7 +162,7 @@ function fallFX(room, s, o, duration) {
 
 function roomInfo(r) {
   return {
-    code: r.code, host: r.host, mode: r.mode, minutes: r.minutes, pitch: r.pitch, state: r.state, score: r.score, teams: r.teams,
+    code: r.code, host: r.host, mode: r.mode, minutes: r.minutes, pitch: r.pitch, paused: !!r.paused, state: r.state, score: r.score, teams: r.teams,
     members: [...r.members].map(([id, { cid, ...m }]) => ({ id, ...m })),
   };
 }
@@ -176,6 +176,7 @@ function emitRoster(r) {
 // ---------- Flujo del partido ----------
 function startMatch(room) {
   usePitch(room);
+  room.paused = false;
   visualHistory.delete(room);visualContacts.delete(room);
   buildRoster(room);
   room.score = [0, 0];
@@ -915,6 +916,7 @@ function enforceSetPiece(room) {
 function step(room) {
   usePitch(room);
   room.tick++;
+  if (room.paused) return; // pausa del anfitrión: el reloj de red sigue, el partido no
   if (room.state === 'lobby' || room.state === 'ended') return;
   if (room.state === 'goal') {
     for (const p of room.players) {
@@ -1063,8 +1065,17 @@ io.on('connection', socket => {
     startMatch(room);
   });
 
+  socket.on('pause', on => {
+    if (!room || room.host !== socket.id || room.state === 'lobby' || room.state === 'ended') return;
+    room.paused = !!on;
+    // lo apretado durante la pausa no se ejecuta al volver
+    for (const p of room.players) { p.pressed = p.released = 0; }
+    broadcastRoom(room);
+  });
+
   socket.on('toLobby', () => {
     if (!room || room.host !== socket.id) return;
+    room.paused = false;
     room.state = 'lobby';
     room.sp = null;
     broadcastRoom(room);
