@@ -5,11 +5,11 @@
   const GOAL_TOP = 270, GOAL_BOT = 370, GOAL_H = 44, GOAL_DEPTH = 26;
   const BOX_D = 160, BOX_TOP = 150, BOX_BOT = 490, PEN_SPOT = 115;
   const TICK_MS = 1000 / 60, INTERP = 4, VIEW_H = 360, FM = 110, FS = 2;
-  const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, MOD: 32, TACKLE: 64, PASS: 128, THROUGH: 256, LOB: 512, SHOOT: 1024 };
+  const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, PASS: 128, SHOOT: 1024 };
   const ST_NAMES = ['run', 'slide', 'recover', 'down', 'spin', 'croq', 'step', 'fake', 'rainbow', 'fooled', 'hold', 'dive'];
   const KEYMAP = {
     ArrowUp: B.UP, ArrowDown: B.DOWN, ArrowLeft: B.LEFT, ArrowRight: B.RIGHT, Space: B.SPRINT,
-    KeyE: B.MOD, ShiftLeft: B.MOD, ShiftRight: B.MOD, KeyQ: B.TACKLE, KeyS: B.PASS, KeyW: B.THROUGH, KeyA: B.LOB, KeyD: B.SHOOT,
+    KeyS: B.PASS, KeyD: B.SHOOT,
   };
 
   const $ = id => document.getElementById(id);
@@ -344,8 +344,7 @@
   addEventListener('blur', releaseAll);
   const cv = $('cv'), ctx = cv.getContext('2d');
   cv.addEventListener('contextmenu', e => e.preventDefault());
-  cv.addEventListener('mousedown', e => { audio.init(); if (e.button === 2) setBit(B.TACKLE, true); });
-  addEventListener('mouseup', e => { if (e.button === 2) setBit(B.TACKLE, false); });
+  cv.addEventListener('mousedown', () => audio.init());
 
   // Controles táctiles (visibles solo con pointer: coarse vía CSS)
   const DIRS = B.UP | B.DOWN | B.LEFT | B.RIGHT;
@@ -365,6 +364,7 @@
     btn.addEventListener('pointercancel', up);
     btn.addEventListener('contextmenu', e => e.preventDefault());
   });
+  const passBtn = document.querySelector('.tbtns [data-b="PASS"]');
   const stick = $('stick'), knob = stick.firstElementChild;
   let stickId = null;
   function moveStick(e) {
@@ -753,7 +753,7 @@
 
   const cam = { x: CX, y: CY, shake: 0 };
   let celebrate = -1, curState = ''; // equipo que festeja un gol (brazos arriba mientras dura el estado 'goal')
-  const GK_HINT = 'Flechas apuntan · S pase · W al hueco · A largo · D despeje';
+  const GK_HINT = 'Apuntá · PASE (S) sacá · TIRO (D) despejá';
   const myTeam = () => { const me = roster.get(myPid); return me ? me.team : -1; };
 
   function handleEvent(e, s) {
@@ -887,6 +887,9 @@
   function drawOverlays(v) {
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     const me = roster.get(myPid), gi = roster.get(v.owner);
+    // El botón PASE dice lo que hace: con la pelota del rival, barre
+    const passLabel = me && gi && gi.team !== me.team ? 'BARRIDA' : 'PASE';
+    if (passBtn.textContent !== passLabel) passBtn.textContent = passLabel;
     // Tu arquero tiene el balón: flecha hacia donde va a sacar (tus flechas, o hacia ti si no apuntas)
     if (me && gi && gi.kind === 'gk' && gi.team === me.team) {
       const gp = v.players.find(q => q.id === gi.id), mp = v.players.find(q => q.id === myPid);

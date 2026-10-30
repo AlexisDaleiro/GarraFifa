@@ -332,12 +332,12 @@ kbd {
     right: max(14px, env(safe-area-inset-right));
     bottom: 14px;
     display: grid;
-    grid-template-columns: repeat(3, 64px);
-    gap: 8px;
+    grid-template-columns: repeat(2, 84px);
+    gap: 10px;
   }
   .tbtns button {
-    height: 52px;
-    font: 400 10px var(--font-title);
+    height: 72px;
+    font: 400 13px var(--font-title);
     color: #fff;
     background: #000a;
     border: 2px solid #fff8;
@@ -372,8 +372,9 @@ kbd {
 @media (pointer: coarse) and (max-height: 420px) {
   .stick { width: 116px; height: 116px; bottom: 12px; }
   .stick i { width: 50px; height: 50px; margin: -25px 0 0 -25px; }
-  .tbtns { grid-template-columns: repeat(3, 56px); gap: 6px; bottom: 10px; }
-  .tbtns button { height: 42px; font-size: 9px; }
+  .tbtns { grid-template-columns: repeat(2, 72px); gap: 8px; bottom: 10px; }
+  .tbtns button { height: 58px; font-size: 11px; }
+  .tbtns button.wide { height: 44px; }
 }
 
 @keyframes blink { 50% { opacity: 0.35; } }

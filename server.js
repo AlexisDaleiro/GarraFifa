@@ -18,14 +18,14 @@ const BOX_D = 160, BOX_TOP = 150, BOX_BOT = 490, PEN_SPOT = 115;
 const TICK = 60, DT_MS = 1000 / TICK;
 const GRAV = 0.32, PR = 9, BALL_R = 4;
 
-const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, MOD: 32, TACKLE: 64, PASS: 128, THROUGH: 256, LOB: 512, SHOOT: 1024 };
+// Tres botones: PASE (si la tiene el rival: barrida; si un compañero: pedirla), TIRO y SPRINT.
+const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, PASS: 128, SHOOT: 1024 };
 const DIRS = B.UP | B.DOWN | B.LEFT | B.RIGHT;
+const INPUT_MASK = DIRS | B.SPRINT | B.PASS | B.SHOOT;
 const ST = { run: 0, slide: 1, recover: 2, down: 3, spin: 4, croq: 5, step: 6, fake: 7, rainbow: 8, fooled: 9, hold: 10, dive: 11 };
 const FORMATIONS = { 1: [[320, 320]], 2: [[270, 230], [420, 410]], 3: [[250, 190], [250, 450], [420, 320]] };
 const BOT_NUMS = [9, 7, 11, 10, 8];
 const SP_LABEL = { kickoff: 'SAQUE INICIAL', free: 'TIRO LIBRE', penalty: '¡PENAL!', corner: 'CÓRNER', goalkick: 'SAQUE DE META', throw: 'SAQUE DE BANDA' };
-const SKILL_T = { spin: 28, croq: 14, step: 20 };
-const SKILL_NAME = { spin: 'RULETA', croq: 'CROQUETA', step: 'BICICLETA' };
 const HOLD_T = 240; // ticks que el arquero espera la orden de un humano antes de sacar solo
 const CALL_T = 120, CALL_COOL = 150; // pedido visible por 2 s; evita repetirlo al mantener la tecla
 
@@ -60,7 +60,7 @@ function makeCode() {
 }
 
 function newBall() {
-  return { x: CX, y: CY, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, owner: null, lastTeam: 0, lastPlayer: 0, inNet: false, netSide: 0 };
+  return { x: CX, y: CY, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, owner: null, lastTeam: 0, lastPlayer: 0, kicker: 0, inNet: false, netSide: 0 };
 }
 
 function newRoom(hostSid, mode, minutes) {
@@ -86,7 +86,7 @@ function makePlayer(room, team, kind, prof, sid) {
     x: CX, y: CY, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI, st: 'run', stT: 0, stamina: 100, tired: false,
     sprinting: false, charging: false, charge: 0, queued: null, queuedT: 0, cool: 0, touchCool: 0, boostT: 0, kickT: 0,
     callT: 0, callCool: 0,
-    lastFwdTap: -99, skillX: 0, skillY: 0, spinDir: 1, slideClean: false, lastDir: { x: 0, y: 0 },
+    slideClean: false, lastDir: { x: 0, y: 0 },
     input: 0, pressed: 0, released: 0, aiDir: null, aiHold: 0, home: { x: CX, y: CY },
   };
 }
@@ -227,7 +227,9 @@ function goal(room, team) {
   b.inNet = true; b.netSide = team === 0 ? 1 : -1; b.owner = null;
   room.state = 'goal'; room.goalT = 420; room.kickTeam = 1 - team; room.sp = null;
   for (const p of room.players) { p.charging = false; p.charge = 0; p.queued = null; p.callT = 0; }
-  const scorer = room.players.find(p => p.id === b.lastPlayer);
+  // Un roce del arquero o un desvío del defensor no convierte en autogol el remate del rival.
+  const last = room.players.find(p => p.id === b.lastPlayer), kicker = room.players.find(p => p.id === b.kicker);
+  const scorer = last && last.team !== team && kicker && kicker.team === team ? kicker : last;
   emitEv(room, { type: 'goal', team, scorer: scorer ? scorer.name : '', own: !!scorer && scorer.team !== team, score: room.score });
 }
 
@@ -256,7 +258,7 @@ function foul(room, s, o) {
 function kickBall(room, p, vx, vy, vz, spin) {
   const b = room.ball;
   b.owner = null; b.vx = vx; b.vy = vy; b.vz = vz; b.spin = spin || 0;
-  b.lastTeam = p.team; b.lastPlayer = p.id;
+  b.lastTeam = p.team; b.lastPlayer = p.id; b.kicker = p.id;
   room.pass = null;
   p.touchCool = 14; p.kickT = 10; p.kickKind = 'kick'; p.charging = false; p.charge = 0; p.queued = null; p.callT = 0;
   emitEv(room, { type: 'kick', p: r1(Math.hypot(vx, vy) + Math.abs(vz)), x: r1(b.x), y: r1(b.y) });
@@ -272,17 +274,33 @@ function findMate(room, p, aim) {
     if (d < 30 || d > 560) continue;
     const dot = (dx * fx + dy * fy) / d;
     if (dot < 0.2) continue;
-    let score = dot * 3 - d / 500;
-    for (const o of room.players) {
-      if (o.team === p.team) continue;
-      const t = ((o.x - p.x) * dx + (o.y - p.y) * dy) / (d * d);
-      if (t <= 0.05 || t >= 1) continue;
-      const off = Math.abs((o.x - p.x) * dy - (o.y - p.y) * dx) / d;
-      if (off < 22) score -= ((22 - off) / 22) * 0.9;
-    }
+    const score = dot * 3 - d / 500 - linePenalty(room, p, m);
     if (score > bestScore) { bestScore = score; best = m; }
   }
   return best;
+}
+
+// Cuánto tapan los rivales la línea de pase de p a m (0 = libre).
+function linePenalty(room, p, m) {
+  const dx = m.x - p.x, dy = m.y - p.y, d = Math.hypot(dx, dy) || 1;
+  let pen = 0;
+  for (const o of room.players) {
+    if (o.team === p.team) continue;
+    const t = ((o.x - p.x) * dx + (o.y - p.y) * dy) / (d * d);
+    if (t <= 0.05 || t >= 1) continue;
+    const off = Math.abs((o.x - p.x) * dy - (o.y - p.y) * dx) / d;
+    if (off < 22) pen += ((22 - off) / 22) * 0.9;
+  }
+  return pen;
+}
+
+// Un solo botón de pase: lejos o con la línea tapada va bombeado; compañero picando al arco, al hueco.
+function autoKind(room, p, mate) {
+  if (!mate) return 'ground';
+  if (dist(mate.x, mate.y, p.x, p.y) > 240 || linePenalty(room, p, mate) > 0.45) return 'lob';
+  const side = p.team === 0 ? 1 : -1;
+  if ((mate.x - p.x) * side > 60 && mate.vx * side > 1) return 'through';
+  return 'ground';
 }
 
 const ROLL = 0.982, AIR = 0.994; // rozamiento por tick del balón raso / en el aire (ver updateBall)
@@ -290,6 +308,7 @@ const ROLL = 0.982, AIR = 0.994; // rozamiento por tick del balón raso / en el 
 function doPass(room, p, aim, kind) {
   const b = room.ball;
   const mate = findMate(room, p, aim);
+  if (kind === 'auto') kind = autoKind(room, p, mate);
   let tx, ty;
   if (mate) {
     // punto de encuentro: dónde estará el compañero cuando llegue el balón
@@ -369,37 +388,6 @@ function doShoot(room, p, power, header) {
   emitEv(room, { type: 'shot', id: p.id, kind: header ? 'cabeza' : sp.kind });
 }
 
-function foolNearby(room, p, r) {
-  const fx = Math.cos(p.face), fy = Math.sin(p.face);
-  for (const o of room.players) {
-    if (o.team === p.team || o.kind === 'gk' || o.st !== 'run') continue;
-    const dx = o.x - p.x, dy = o.y - p.y, d = Math.hypot(dx, dy);
-    if (d > r || dx * fx + dy * fy < -10) continue;
-    o.st = 'fooled'; o.stT = 30; o.charging = false;
-    o.vx *= 1.3; o.vy *= 1.3;
-  }
-}
-
-function doFake(room, p) {
-  p.charging = false; p.charge = 0; p.st = 'fake'; p.stT = 18; p.vx = p.vy = 0;
-  foolNearby(room, p, 110);
-  emitEv(room, { type: 'skill', id: p.id, name: 'AMAGO' });
-}
-
-function startSkill(room, p, kind, d) {
-  p.st = kind; p.stT = SKILL_T[kind]; p.skillX = d.x; p.skillY = d.y;
-  p.spinDir = Math.cos(p.face) * d.y - Math.sin(p.face) * d.x >= 0 ? 1 : -1;
-  p.stamina = Math.max(0, p.stamina - 5);
-  emitEv(room, { type: 'skill', id: p.id, name: SKILL_NAME[kind] });
-}
-
-function startRainbow(room, p) {
-  const fx = Math.cos(p.face), fy = Math.sin(p.face);
-  kickBall(room, p, fx * 3 + p.vx * 0.6, fy * 3 + p.vy * 0.6, 5.6, 0);
-  p.touchCool = 8; p.st = 'rainbow'; p.stT = 14; p.stamina = Math.max(0, p.stamina - 5);
-  emitEv(room, { type: 'skill', id: p.id, name: 'SOMBRERITO' });
-}
-
 const hasHuman = (room, team) => room.players.some(m => m.sid && m.team === team);
 
 // Saque del arquero: aim/kind los elige un humano; si no, busca un compañero (prefiere humanos).
@@ -410,14 +398,14 @@ function gkDistribute(room, p, aim, kind) {
     const humans = mates.filter(m => m.sid), pool = humans.length ? humans : mates;
     const m = pool[(Math.random() * pool.length) | 0];
     aim = Math.atan2(m.y - p.y, m.x - p.x);
-    kind = dist(m.x, m.y, p.x, p.y) > 220 ? 'lob' : 'ground';
+    kind = 'auto';
   }
   p.face = aim; p.st = 'run'; p.stT = 0;
   if (kind === 'punt') kickBall(room, p, Math.cos(aim) * 9, Math.sin(aim) * 9, 6.5, 0);
   else doPass(room, p, aim, kind);
 }
 
-// Cuando tu arquero tiene el balón, tú decides el saque: S raso, W al hueco, A bombeado, D despeje; flechas apuntan.
+// Cuando tu arquero tiene el balón, tú decides el saque: PASE o TIRO (despeje); flechas apuntan.
 function gkHumanKick(room) {
   const g = room.ball.owner, sp = room.sp;
   if (!g || g.kind !== 'gk') return;
@@ -425,9 +413,9 @@ function gkHumanKick(room) {
   for (const h of room.players) {
     if (!h.sid || h.team !== g.team) continue;
     const pr = h.pressed;
-    const kind = pr & B.PASS ? 'ground' : pr & B.THROUGH ? 'through' : pr & B.LOB ? 'lob' : pr & B.SHOOT ? 'punt' : null;
+    const kind = pr & B.PASS ? 'auto' : pr & B.SHOOT ? 'punt' : null;
     if (!kind) continue;
-    h.pressed &= ~(B.PASS | B.THROUGH | B.LOB | B.SHOOT);
+    h.pressed &= ~(B.PASS | B.SHOOT);
     const d = dirFromBits(h.input);
     return gkDistribute(room, g, d.x || d.y ? Math.atan2(d.y, d.x) : Math.atan2(h.y - g.y, h.x - g.x), kind);
   }
@@ -445,8 +433,6 @@ function endState(room, p) {
   const prev = p.st;
   p.st = 'run';
   if (prev === 'slide') { p.st = 'recover'; p.stT = 14; }
-  else if (prev === 'spin') p.face = Math.atan2(p.skillY, p.skillX);
-  else if (prev === 'step') { p.boostT = 45; foolNearby(room, p, 90); }
   else if (prev === 'dive') { p.st = 'recover'; p.stT = 22; }
   else if (prev === 'hold' && room.ball.owner === p) gkDistribute(room, p);
 }
@@ -484,7 +470,7 @@ function updatePlayer(room, p) {
   // Velocidad + estamina ("Garra")
   let speed = p.kind === 'gk' ? 2.6 : 2.5;
   p.sprinting = false;
-  if ((held & B.SPRINT) && !(held & B.MOD) && moving && !p.tired && p.st === 'run' && !frozen && !isTaker) {
+  if ((held & B.SPRINT) && moving && !p.tired && p.st === 'run' && !frozen && !isTaker) {
     speed = p.kind === 'gk' ? 3.3 : 3.45;
     p.stamina -= 0.32;
     p.sprinting = true;
@@ -507,15 +493,6 @@ function updatePlayer(room, p) {
       break;
     }
     case 'slide': p.vx *= 0.955; p.vy *= 0.955; break;
-    case 'spin':
-      p.face = normAng(p.face + (p.spinDir * Math.PI * 2) / SKILL_T.spin);
-      p.vx = p.skillX * 2.4; p.vy = p.skillY * 2.4;
-      break;
-    case 'croq': p.vx = p.skillX * 4.4; p.vy = p.skillY * 4.4; break;
-    case 'step': p.vx = Math.cos(p.face) * 1.5; p.vy = Math.sin(p.face) * 1.5; break;
-    case 'fake': p.vx = 0; p.vy = 0; break;
-    case 'rainbow': p.vx = Math.cos(p.face) * 2.4; p.vy = Math.sin(p.face) * 2.4; break;
-    case 'fooled': p.vx *= 0.985; p.vy *= 0.985; break;
     case 'dive': p.vx *= 0.93; p.vy *= 0.93; break;
     default: p.vx *= 0.8; p.vy *= 0.8; // recover, down, hold
   }
@@ -530,22 +507,12 @@ function updatePlayer(room, p) {
   if (frozen || p.st !== 'run') { if (!hasBall) p.charging = false; return; }
   const aim = moving ? Math.atan2(d.y, d.x) : p.face;
 
-  // Regates (modificador E / Shift)
-  if (hasBall && !isTaker && (held & B.MOD)) {
-    if (pr & B.SPRINT) return startRainbow(room, p);
-    if ((pr & DIRS) && moving) {
-      const fdot = d.x * Math.cos(p.face) + d.y * Math.sin(p.face);
-      if (fdot < -0.45) return startSkill(room, p, 'spin', d);
-      if (fdot <= 0.55) return startSkill(room, p, 'croq', d);
-      if (room.tick - p.lastFwdTap < 22) { p.lastFwdTap = -99; return startSkill(room, p, 'step', d); }
-      p.lastFwdTap = room.tick;
-    }
-  }
-
-  // Barrida
-  if ((pr & B.TACKLE) && !hasBall && p.cool <= 0 && p.kind === 'field' && room.state === 'play') {
-    p.st = 'slide'; p.stT = 26; p.cool = 70; p.slideClean = false; p.face = aim;
-    p.vx = Math.cos(aim) * 7.2; p.vy = Math.sin(aim) * 7.2;
+  // Barrida: PASE mientras el rival tiene la pelota. Con el stick apunta; sin stick va hacia el rival.
+  const carrier = b.owner && b.owner.team !== p.team ? b.owner : null;
+  if ((pr & B.PASS) && carrier && p.cool <= 0 && p.kind === 'field' && room.state === 'play') {
+    const ta = moving ? aim : Math.atan2(carrier.y - p.y, carrier.x - p.x);
+    p.st = 'slide'; p.stT = 26; p.cool = 70; p.slideClean = false; p.face = ta;
+    p.vx = Math.cos(ta) * 7.2; p.vy = Math.sin(ta) * 7.2;
     p.stamina = Math.max(0, p.stamina - 6);
     emitEv(room, { type: 'slide', id: p.id });
     return;
@@ -554,7 +521,6 @@ function updatePlayer(room, p) {
   if (hasBall) {
     if (p.charging) {
       p.charge = Math.min(1, p.charge + 1 / 55);
-      if ((pr & B.PASS) && !isTaker) return doFake(room, p);
       if ((rel & B.SHOOT) || !(held & B.SHOOT)) return doShoot(room, p, p.charge, false);
       return;
     }
@@ -563,20 +529,20 @@ function updatePlayer(room, p) {
       p.charging = true; p.charge = 0.05;
       return;
     }
-    if (pr & B.PASS) return doPass(room, p, aim, 'ground');
-    if (pr & B.THROUGH) return doPass(room, p, aim, 'through');
-    if (pr & B.LOB) return doPass(room, p, aim, 'lob');
+    if (pr & B.PASS) return doPass(room, p, aim, 'auto');
   } else {
     p.charging = false; p.charge = 0;
-    const passPressed = pr & (B.PASS | B.THROUGH | B.LOB);
-    if (passPressed && p.sid && p.kind === 'field' && room.state === 'play' && p.callCool === 0) {
+    const passPressed = pr & B.PASS;
+    // Solo se pide cuando la tiene un compañero
+    const mateHas = !!b.owner && b.owner.team === p.team;
+    if (passPressed && mateHas && p.sid && p.kind === 'field' && room.state === 'play' && p.callCool === 0) {
       p.callT = CALL_T; p.callCool = CALL_COOL;
     }
     // Pedirla a un compañero no prepara un pase involuntario cuando la recibís.
     // Se mantiene la jugada de primera si el pase ya viene hacia vos o el balón está al alcance.
     const firstTouch = !p.sid || (!b.owner && (isReceiver(room, p) || dist(p.x, p.y, b.x, b.y) < 40));
     if (passPressed && !firstTouch) { p.queued = null; p.queuedT = 0; }
-    const q = pr & B.SHOOT ? 'shoot' : !firstTouch ? null : pr & B.PASS ? 'pass' : pr & B.THROUGH ? 'through' : pr & B.LOB ? 'lob' : null;
+    const q = pr & B.SHOOT ? 'shoot' : firstTouch && passPressed ? 'pass' : null;
     if (q) { p.queued = q; p.queuedT = 18; }
   }
 }
@@ -619,7 +585,7 @@ function fieldAI(room, p) {
     const dGoal = dist(p.x, p.y, goalX, CY);
     if (sp.type === 'penalty' || (sp.type === 'free' && dGoal < 300)) return aiShoot(p, side);
     const m = findMate(room, p, Math.atan2(CY - p.y, goalX - p.x)) || findMate(room, p, p.face);
-    if (m) return aiPassTo(p, m, dist(m.x, m.y, p.x, p.y) > 240 || sp.type === 'corner' ? B.LOB : B.PASS);
+    if (m) return aiPassTo(p, m, B.PASS);
     p.aiDir = { x: side, y: 0 };
     p.pressed |= B.PASS;
     return;
@@ -629,10 +595,6 @@ function fieldAI(room, p) {
     const dGoal = dist(p.x, p.y, goalX, CY);
     const { o: near, d: nd } = nearestOpp(room, p);
     if (dGoal < 280 && Math.abs(p.y - CY) < 220 && Math.random() < 0.06) return aiShoot(p, side);
-    if (nd < 45 && p.st === 'run' && Math.random() < 0.025) {
-      const fx = Math.cos(p.face), fy = Math.sin(p.face), s = Math.random() < 0.5 ? 1 : -1;
-      return startSkill(room, p, 'croq', { x: -fy * s, y: fx * s });
-    }
     if (nd < 50 && Math.random() < 0.05) {
       const m = findMate(room, p, Math.atan2(CY - p.y, goalX - p.x)) || findMate(room, p, p.face);
       if (m) return aiPassTo(p, m, B.PASS);
@@ -658,7 +620,7 @@ function fieldAI(room, p) {
       const dp = dist(p.x, p.y, px, py);
       sprint = dp > 50 && p.stamina > 30;
       if (b.owner && b.owner.team !== p.team && b.owner.kind === 'field') {
-        if (dp < 34 && p.cool <= 0 && room.state === 'play' && Math.random() < 0.03) p.pressed |= B.TACKLE;
+        if (dp < 34 && p.cool <= 0 && room.state === 'play' && Math.random() < 0.03) p.pressed |= B.PASS;
       } else if (!b.owner && b.z > 8 && dp < 50 && Math.random() < 0.2) {
         p.pressed |= (b.x - CX) * side > 150 ? B.SHOOT : B.PASS;
       }
@@ -709,8 +671,7 @@ function updateBall(room) {
   if (o) {
     if (room.state === 'setpiece' && room.sp && room.sp.taker === o) { b.x = room.sp.x; b.y = room.sp.y; return; }
     const held = o.st === 'hold'; // en las manos del arquero, a la altura del pecho
-    let ox = Math.cos(o.face) * (held ? 5 : 11), oy = Math.sin(o.face) * (held ? 5 : 11);
-    if (o.st === 'croq') { ox = o.skillX * 10; oy = o.skillY * 10; }
+    const ox = Math.cos(o.face) * (held ? 5 : 11), oy = Math.sin(o.face) * (held ? 5 : 11);
     const tx = o.x + ox + o.vx, ty = o.y + oy + o.vy;
     b.x += (tx - b.x) * 0.55; b.y += (ty - b.y) * 0.55;
     b.vx = o.vx; b.vy = o.vy; b.z = held ? 22 : 0; b.vz = 0; b.spin = 0;
@@ -777,7 +738,7 @@ function checkTouches(room) {
   if (b.owner || b.inNet) return;
   let p = null, bestD = Infinity;
   for (const q of room.players) {
-    if (q.touchCool > 0 || ['down', 'recover', 'slide', 'fooled'].includes(q.st)) continue;
+    if (q.touchCool > 0 || ['down', 'recover', 'slide'].includes(q.st)) continue;
     const recv = isReceiver(room, q); // el destinatario del pase controla con más radio (pecho/muslo)
     const reach = q.kind === 'gk' ? 18 : recv ? 17 : 13;
     const maxZ = q.kind === 'gk' ? 36 : q.queued ? 40 : recv ? 24 : 14;
@@ -809,7 +770,7 @@ function checkTouches(room) {
     if (q === 'shoot') emitEv(room, { type: 'skill', id: p.id, name: head ? '¡DE CABEZA!' : b.z > 5 ? '¡DE VOLEA!' : '¡A LA PRIMERA!' });
     const aim = p.lastDir.x || p.lastDir.y ? Math.atan2(p.lastDir.y, p.lastDir.x) : p.face;
     if (q === 'shoot') doShoot(room, p, 0.55, head);
-    else doPass(room, p, aim, q === 'pass' ? 'ground' : q);
+    else doPass(room, p, aim, 'auto');
     return;
   }
   if (spd > 12.5 && Math.random() < 0.35) {
@@ -1052,7 +1013,7 @@ io.on('connection', socket => {
     if (!room || typeof bits !== 'number') return;
     const p = room.players.find(q => q.sid === socket.id);
     if (!p) return;
-    bits &= 2047;
+    bits &= INPUT_MASK;
     p.pressed |= bits & ~p.input;
     p.released |= p.input & ~bits;
     p.input = bits;
@@ -1117,7 +1078,7 @@ function selfTest() {
     rooms.delete(r.code);
   }
   // 4) Pase asistido: apuntando 30° desviado, el balón llega al compañero (humano quieto que corta solo).
-  for (const kind of ['ground', 'through', 'lob']) {
+  for (const kind of ['ground', 'through', 'lob', 'auto']) {
     const r = newRoom('t', 2, 3);
     r.state = 'play';
     const p = makePlayer(r, 0, 'field', cleanProfile({}), 'a');
@@ -1135,8 +1096,29 @@ function selfTest() {
     assert.strictEqual(r.ball.owner, mate, `${kind}: el pase no llegó`);
     rooms.delete(r.code);
   }
-  // 5) S/W/A sin pelota: pedido compartido, sin pase accidental, con duración y enfriamiento.
-  for (const button of [B.PASS, B.THROUGH, B.LOB]) {
+  // 4b) Pase automático: lejos va bombeado, cerca y libre va raso; PASE pegado al rival con pelota barre.
+  {
+    const r = newRoom('t', 2, 3);
+    r.state = 'play';
+    const p = makePlayer(r, 0, 'field', cleanProfile({}), 'a');
+    const mate = makePlayer(r, 0, 'field', cleanProfile({}), null);
+    const opp = makePlayer(r, 1, 'field', cleanProfile({}), null);
+    r.players = [p, mate, opp];
+    Object.assign(p, { x: 300, y: 320 });
+    Object.assign(opp, { x: 100, y: 100 });
+    Object.assign(mate, { x: 400, y: 320, vx: 0 });
+    assert.strictEqual(autoKind(r, p, mate), 'ground');
+    Object.assign(mate, { x: 700, y: 320 });
+    assert.strictEqual(autoKind(r, p, mate), 'lob');
+    Object.assign(opp, { x: 300, y: 300 });
+    Object.assign(r.ball, { owner: opp, x: 311, y: 300 });
+    p.pressed = B.PASS; updatePlayer(r, p);
+    assert.strictEqual(p.st, 'slide', 'PASE junto al rival con pelota debe barrer');
+    assert.strictEqual(p.callT, 0, 'barrer no es pedirla');
+    rooms.delete(r.code);
+  }
+  // 5) PASE sin pelota: pedido compartido, sin pase accidental, con duración y enfriamiento.
+  for (const button of [B.PASS]) {
     const r = newRoom('t', 2, 3);
     r.state = 'play';
     const p = makePlayer(r, 0, 'field', cleanProfile({}), 'human');
@@ -1165,9 +1147,13 @@ function selfTest() {
     // El pase de primera sigue disponible cuando la pelota ya viene hacia el jugador.
     r.ball.owner = null; r.pass = { to: p.id, x: p.x, y: p.y, t: 100 };
     p.pressed = button; updatePlayer(r, p);
-    assert.strictEqual(p.queued, button === B.PASS ? 'pass' : button === B.THROUGH ? 'through' : 'lob');
-    // También se puede pedir sin posesión del equipo y sin preparar una devolución.
+    assert.strictEqual(p.queued, 'pass');
+    // Con la pelota del rival no se pide: PASE barre, aunque esté lejos.
     r.pass = null; mate.team = 1; r.ball.owner = mate;
+    p.callCool = 0; p.pressed = button; updatePlayer(r, p);
+    assert.strictEqual(p.callT, 0, 'no se pide mientras la tiene el rival');
+    assert.strictEqual(p.st, 'slide', 'PASE con la pelota del rival debe barrer');
+    p.st = 'run'; p.stT = 0; mate.team = 0;
     p.callCool = 0; p.pressed = button; updatePlayer(r, p);
     assert.strictEqual(p.callT, CALL_T);
     assert.strictEqual(p.queued, null, 'pedirla debe cancelar un toque pendiente de una jugada anterior');
@@ -1175,6 +1161,26 @@ function selfTest() {
     assert(r.players.every(q => q.callT === 0), 'una interrupción debe cancelar los pedidos');
     p.callCool = 0; p.pressed = button; updatePlayer(r, p);
     assert.strictEqual(p.callT, 0, 'no se debe pedir durante una interrupción');
+    rooms.delete(r.code);
+  }
+  // 5b) Remate que roza el arquero y entra: gol del que pateó, no autogol. Despeje propio al arco: autogol.
+  {
+    const r = newRoom('t', 1, 3);
+    r.state = 'play';
+    const att = makePlayer(r, 0, 'field', cleanProfile({ name: 'Ata' }), null);
+    const gk = makePlayer(r, 1, 'gk', cleanProfile({ name: 'Arq' }), null);
+    r.players = [att, gk];
+    kickBall(r, att, 10, 0, 0, 0);
+    r.ball.lastPlayer = gk.id; r.ball.lastTeam = 1; // roce del arquero
+    goal(r, 0);
+    let ev = r.events.find(e => e.type === 'goal');
+    assert.strictEqual(ev.own, false, 'un roce del arquero no es autogol');
+    assert.strictEqual(ev.scorer, 'Ata');
+    r.events = []; r.ball.inNet = false;
+    kickBall(r, gk, -10, 0, 0, 0);
+    goal(r, 0);
+    ev = r.events.find(e => e.type === 'goal');
+    assert.strictEqual(ev.own, true, 'patearla al propio arco sí es autogol');
     rooms.delete(r.code);
   }
   // 6) Partidos completos solo con bots: sin NaN y terminan.
