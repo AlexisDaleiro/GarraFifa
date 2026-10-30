@@ -9,7 +9,10 @@
   const turn=(a,b,dt,rate=9)=>a+clamp(angle(a,b),-rate*clamp(dt,0,.05),rate*clamp(dt,0,.05));
   const rotationAlpha=(distance,dt,rate=24)=>distance>1e-8?Math.min(alpha(dt,.035),rate*clamp(dt,0,.05)/distance):alpha(dt,.035);
   function createClock(){
-    const c={offset:null,jitter:0,delay:4,cursor:null,lastTick:-Infinity,lastArrival:0,lastFrame:null,resumed:false};
+    // offset: llegada más temprana vista (los paquetes demorados no la mueven; sube despacio si la ruta empeora).
+    // late: pico de demora sobre esa base, decae lento. delay (buffer) cubre ese pico: crece rápido, baja despacio,
+    // así cortes y ráfagas (wifi, celular, long-polling) no traban ni aceleran la imagen.
+    const c={offset:null,late:0,jitter:0,delay:4,cursor:null,lastTick:-Infinity,lastArrival:0,lastFrame:null,resumed:false};
     c.receive=(tick,now)=>{
       if(tick<=c.lastTick)return false;
       const off=now/TICK-tick;
@@ -17,20 +20,22 @@
       else{
         const gap=Math.min(250,now-c.lastArrival),error=Math.abs((now-c.lastArrival)/TICK-(tick-c.lastTick));
         c.jitter+=(Math.min(error,12)-c.jitter)*.08;
-        c.offset+=clamp(off-c.offset,-6,6)*(1-Math.exp(-gap/1200));
-        c.delay+=(clamp(4+c.jitter*1.6,4,10)-c.delay)*(1-Math.exp(-gap/500));
+        c.offset=Math.min(off,c.offset+gap/TICK*.01);
+        c.late=Math.max(off-c.offset,c.late-gap/TICK*.02);
+        const want=clamp(c.late+1.5,4,30);
+        c.delay+=(want-c.delay)*(want>c.delay?.5:1-Math.exp(-gap/4000));
       }
       c.lastTick=tick;c.lastArrival=now;return true;
     };
     c.advance=now=>{
       if(c.offset===null)return null;
       const target=now/TICK-c.offset-c.delay,gap=c.lastFrame===null?0:now-c.lastFrame;
-      c.resumed=gap>250;
+      c.resumed=gap>250||(c.cursor!==null&&Math.abs(target-c.cursor)>40);
       if(c.cursor===null||c.resumed)c.cursor=target;
-      else c.cursor+=Math.min(50,Math.max(0,gap))/TICK*(1+clamp((target-c.cursor)*.08,-.15,.15));
+      else c.cursor+=Math.min(50,Math.max(0,gap))/TICK*(1+clamp((target-c.cursor)*.05,-.08,.08));
       c.lastFrame=now;return c.cursor;
     };
-    c.reset=()=>{c.offset=c.cursor=c.lastFrame=null;c.jitter=0;c.delay=4;c.lastTick=-Infinity;c.lastArrival=0;};
+    c.reset=()=>{c.offset=c.cursor=c.lastFrame=null;c.late=c.jitter=0;c.delay=4;c.lastTick=-Infinity;c.lastArrival=0;};
     return c;
   }
   const row=(s,id)=>{if(!s)return null;for(let i=0;i<s.p.length;i++)if(s.p[i][0]===id)return s.p[i];return null;};

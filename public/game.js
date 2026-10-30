@@ -143,7 +143,10 @@
   const msg = (id, text) => { $(id).textContent = text; };
 
   // ---------- Red ----------
-  const socket = io();
+  // WebSocket primero: el long-polling entrega en ráfagas y el partido se ve a los tirones.
+  const socket = io({ transports: ['websocket', 'polling'], tryAllTransports: true });
+  let rtt = 0;
+  setInterval(() => { if (!socket.connected || !inGame()) return; const t0 = performance.now(); socket.emit('lat', () => { rtt = performance.now() - t0; if (menuOpen) renderPause(); }); }, 2000);
   let roomInfo = null, roster = new Map(), myPid = 0, snaps = [], lastState = '';
   let endTimer = 0;
 
@@ -387,7 +390,9 @@
     $('btnPauseAll').style.display = $('btnEndMatch').style.display = host && live ? '' : 'none';
     $('btnPauseAll').textContent = r && r.paused ? 'Reanudar para todos' : 'Pausar para todos';
     $('btnSound').textContent = 'Sonido: ' + (audio.muted ? 'no' : 'sí');
-    $('pauseNote').textContent = r && r.paused ? 'Partido en pausa.' : 'El partido sigue corriendo: tu jugador queda quieto mientras estás acá.';
+    const tr = socket.io.engine && socket.io.engine.transport.name;
+    const net = `Conexión: ${tr === 'websocket' ? 'WebSocket' : 'lenta (polling)'}${rtt ? ` · ${Math.round(rtt)} ms` : ''}`;
+    $('pauseNote').textContent = (r && r.paused ? 'Partido en pausa.' : 'El partido sigue corriendo: tu jugador queda quieto mientras estás acá.') + ' ' + net;
   }
   $('btnPause').addEventListener('click', () => setMenu(!menuOpen));
   $('btnResume').onclick = () => setMenu(false);

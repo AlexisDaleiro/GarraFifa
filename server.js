@@ -21,6 +21,7 @@ const GOAL_DEPTH = 26;
 function usePitch(room) { ({ W, H, CX, CY, GOAL_TOP, GOAL_BOT, GOAL_H, BOX_D, BOX_TOP, BOX_BOT, PEN_SPOT } = pitchGeom(PITCHES[room.pitch] || PITCHES[0])); }
 usePitch({ pitch: 0 });
 const TICK = 60, DT_MS = 1000 / TICK;
+const SEND_EVERY = 2; // snapshots a 30 Hz: la mitad de mensajes por jugador; el cliente interpola
 const GRAV = 0.32, PR = 9, BALL_R = 4;
 
 // Tres botones: PASE (si la tiene el rival: barrida; si un compañero: pedirla), TIRO y SPRINT.
@@ -1091,6 +1092,7 @@ io.on('connection', socket => {
     p.input = bits;
   });
 
+  socket.on('lat', cb => { if (typeof cb === 'function') cb(); });
   socket.on('leave', () => leave());
   socket.on('disconnect', () => leave(true));
 });
@@ -1288,7 +1290,7 @@ else {
         room.acc = Math.min(room.acc + elapsed, 250);
         let stepped = false;
         while (room.acc >= DT_MS) { room.acc -= DT_MS; step(room); stepped = true; }
-        if (stepped) io.to(room.code).emit('s', snapshot(room));
+        if (stepped && room.tick - (room.sentTick || 0) >= SEND_EVERY) { room.sentTick = room.tick; io.to(room.code).emit('s', snapshot(room)); }
       } catch (e) {
         // Un error en una sala no tira el servidor entero: esa sala vuelve al lobby.
         console.error(`Error en sala ${room.code}:`, e);

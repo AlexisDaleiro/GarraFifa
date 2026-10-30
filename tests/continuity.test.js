@@ -41,6 +41,15 @@ for(let now=0;now<9900;now+=1000/60){
 }
 assert(maxStep<5,'movimiento continuo con jitter: '+maxStep);
 assert(lastX>1400,'el reloj progresa');
+// Wifi con cortes: cada 2 s se frenan 250 ms y llega todo junto. No debe trabarse ni acelerar.
+{const net=C.createClock(),samp=C.createSampler(),buf=[],del=[];let next=0,last=null,frozen=0,fast=0;
+ for(let t=0;t<1200;t+=2){let at=t*C.TICK;const ph=at%2000;del.push({s:snap(t),at:(ph<250?at-ph+250:at)+40});}
+ for(let now=0;now<19000;now+=1000/60){
+  while(next<del.length&&del[next].at<=now){const d=del[next++];if(net.receive(d.s.t,d.at))buf.push(d.s);}
+  const t=net.advance(now);if(t===null)continue;const x=samp.sample(buf,t).players[0].x;
+  if(last!==null&&now>6000){const st=x-last;if(st<.5)frozen++;if(st>3.5)fast++;}last=x;
+ }
+ assert(frozen===0&&fast===0,`cortes de red: ${frozen} frames trabados, ${fast} acelerados`);}
 const camera=C.createCamera(),person={x:850,y:500};let cx=camera.x,cy=camera.y;
 for(let i=0;i<240;i++){
  const c=camera.update(i<120?900:30,200,i<80?person:null,i>160,i<100?500:1200,i<100?460:300,1/60);
