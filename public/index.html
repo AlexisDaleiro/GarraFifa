@@ -23,12 +23,11 @@
       <div class="menu-col">
         <h3>Crear sala</h3>
         <div class="menu-settings">
-          <label class="field">Modo
-            <select id="mode">
-              <option value="1">1 vs 1</option>
-              <option value="2" selected>2 vs 2</option>
-              <option value="3">3 vs 3</option>
-            </select>
+          <label class="field span-all">Cancha
+            <select id="pitch"></select>
+          </label>
+          <label class="field">Jugadores
+            <select id="mode"></select>
           </label>
           <label class="field">Tiempo
             <select id="minutes">
@@ -102,12 +101,11 @@
         <label class="field">Visitante <select id="teamSel1"></select></label>
       </div>
       <div id="hostSettings" class="host-settings">
-        <label class="field">Modo
-          <select id="lobbyMode">
-            <option value="1">1 vs 1</option>
-            <option value="2">2 vs 2</option>
-            <option value="3">3 vs 3</option>
-          </select>
+        <label class="field span-all">Cancha
+          <select id="lobbyPitch"></select>
+        </label>
+        <label class="field">Jugadores
+          <select id="lobbyMode"></select>
         </label>
         <label class="field">Tiempo
           <select id="lobbyMinutes">
@@ -192,6 +190,7 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="teams.js"></script>
+<script src="pitches.js"></script>
 <script src="locomotion.js"></script>
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.184.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.184.0/examples/jsm/"}}

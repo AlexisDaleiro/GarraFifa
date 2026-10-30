@@ -1,9 +1,10 @@
 'use strict';
 (() => {
   // ---------- Constantes (espejo de server.js) ----------
-  const W = 1000, H = 640, CX = W / 2, CY = H / 2;
-  const GOAL_TOP = 270, GOAL_BOT = 370, GOAL_H = 44, GOAL_DEPTH = 26;
-  const BOX_D = 160, BOX_TOP = 150, BOX_BOT = 490, PEN_SPOT = 115;
+  // La geometría depende de la cancha de la sala (pitches.js); setPitch() la cambia.
+  let pitch = PITCHES[0], W, H, CX, CY, GOAL_TOP, GOAL_BOT, GOAL_H, BOX_D, BOX_TOP, BOX_BOT, PEN_SPOT;
+  ({ W, H, CX, CY, GOAL_TOP, GOAL_BOT, GOAL_H, BOX_D, BOX_TOP, BOX_BOT, PEN_SPOT } = pitchGeom(pitch));
+  const GOAL_DEPTH = 26;
   const TICK_MS = 1000 / 60, VIEW_H = 360, FM = 110, FS = 2;
   const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, PASS: 128, SHOOT: 1024 };
   const toon = ToonFX.create(),C=FootballContinuity;
@@ -183,6 +184,7 @@
     if(!roomInfo||roomInfo.teams[0]!==info.teams[0]||roomInfo.teams[1]!==info.teams[1])kitCache.clear();
     if(info.state==='lobby')toon.reset();
     roomInfo = info;
+    if (PITCHES[info.pitch] && PITCHES[info.pitch] !== pitch) setPitch(info.pitch);
     const mine = info.members.find(m => m.id === socket.id);
     rejoin = { code: info.code, team: mine && mine.team };
     $('roomCode').textContent = info.code;
@@ -231,7 +233,7 @@
   const goLandscape = () => { if (!matchMedia('(pointer: coarse)').matches) return; try { const fs = document.documentElement.requestFullscreen?.(); (fs || Promise.resolve()).then(() => screen.orientation?.lock?.('landscape')).catch(() => {}); } catch {} };
   $('btnCreate').onclick = () => {
     goLandscape(); audio.init(); readProfile(); toon.reset(); resetNetwork();
-    socket.emit('create', { mode: +$('mode').value, minutes: +$('minutes').value, cid, profile }, onJoined);
+    socket.emit('create', { pitch: +$('pitch').value, mode: +$('mode').value, minutes: +$('minutes').value, cid, profile }, onJoined);
   };
   $('btnJoin').onclick = () => {
     const code = $('joinCode').value.trim().toUpperCase();
@@ -243,6 +245,12 @@
 
   $('num').addEventListener('input', () => { readProfile(); socket.emit('profile', profile); drawKit(); });
   for (const btn of document.querySelectorAll('.joinTeam')) btn.onclick = () => socket.emit('team', +btn.dataset.team);
+  // Elegir cancha sugiere su cantidad típica (sala 4 + arquero, fútbol 7 6 + arquero).
+  for (const id of ['pitch', 'lobbyPitch']) PITCHES.forEach((pt, i) => $(id).add(new Option(pt.name, i)));
+  for (const id of ['mode', 'lobbyMode']) for (const n of MODES) $(id).add(new Option(`${n} vs ${n}`, n));
+  $('mode').value = 2;
+  $('pitch').onchange = () => { $('mode').value = PITCHES[+$('pitch').value].mode; };
+  $('lobbyPitch').onchange = () => { const i = +$('lobbyPitch').value; socket.emit('settings', { pitch: i, mode: PITCHES[i].mode }); };
   $('lobbyMode').onchange = () => socket.emit('settings', { mode: +$('lobbyMode').value });
   $('lobbyMinutes').onchange = () => socket.emit('settings', { minutes: +$('lobbyMinutes').value });
   for (const t of [0, 1]) {
@@ -312,8 +320,9 @@
       btn.disabled = !me || me.team === t || count >= r.mode;
     }
     $('lobbyMode').value = r.mode;
+    $('lobbyPitch').value = r.pitch;
     $('lobbyMinutes').value = r.minutes;
-    $('lobbyMode').disabled = $('lobbyMinutes').disabled = !isHost;
+    $('lobbyMode').disabled = $('lobbyPitch').disabled = $('lobbyMinutes').disabled = !isHost;
     $('btnStart').style.display = isHost ? '' : 'none';
     if (!$('lobbyMsg').textContent.startsWith('¡Enlace')) {
       msg('lobbyMsg', isHost ? 'Los huecos vacíos los juega la CPU. ¡Dale a jugar cuando quieras!' : 'Esperando a que el anfitrión inicie el partido…');
@@ -431,29 +440,37 @@
   function sample(list,t){return (list===snaps?liveSampler:replaySampler).sample(list,t);}
 
   // ---------- Cancha pre-renderizada ----------
+  // Estilos por cancha: fondo exterior, piso, tribuna con hinchas o no.
+  const LOOKS = {
+    estadio: { bg: '#151a24', base: '#1d5f29', stripes: ['#2a8435', '#2f8f3a'], fans: 22000, grain: 'rgba(180,255,170,' },
+    sintetico: { bg: '#1b2b22', base: '#1f7a34', stripes: ['#2c9a43', '#33a64a'], fans: 0, grain: 'rgba(200,255,190,' },
+    parquet: { bg: '#2a2d36', base: '#b5763d', stripes: ['#c98a4b', '#c2824a'], fans: 0, grain: 'rgba(255,230,190,' },
+  };
   const fieldCv = document.createElement('canvas');
-  fieldCv.width = (W + FM * 2) * FS;
-  fieldCv.height = (H + FM * 2) * FS;
-  (function buildField() {
-    const g = fieldCv.getContext('2d');
+  function buildField() {
+    fieldCv.width = (W + FM * 2) * FS;
+    fieldCv.height = (H + FM * 2) * FS;
+    const g = fieldCv.getContext('2d'), L = LOOKS[pitch.look] || LOOKS.estadio;
     g.scale(FS, FS);
     g.translate(FM, FM);
     const GM = 64; // césped fuera de las líneas; más allá, tribunas
-    g.fillStyle = '#151a24';
+    g.fillStyle = L.bg;
     g.fillRect(-FM, -FM, W + FM * 2, H + FM * 2);
     const fans = ['#d62828', '#f4f4f4', '#1d4ed8', '#ffd23f', '#2b2b2b', '#7cc0ea', '#f1c27d', '#8d5524', '#0a8f3c'];
-    for (let i = 0; i < 22000; i++) {
+    for (let i = 0; i < L.fans; i++) {
       const x = rnd(-FM, W + FM), y = rnd(-FM, H + FM);
       if (x > -GM - 2 && x < W + GM + 2 && y > -GM - 2 && y < H + GM + 2) continue;
       g.fillStyle = pick(fans);
       g.fillRect(x, y, 1.8, 2.4);
     }
-    g.fillStyle = '#1d5f29';
+    g.fillStyle = L.base;
     g.fillRect(-GM, -GM, W + GM * 2, H + GM * 2);
-    for (let i = 0, x = -GM; x < W + GM; x += 50, i++) {
-      g.fillStyle = i % 2 ? '#2f8f3a' : '#2a8435';
-      g.fillRect(x, -GM, Math.min(50, W + GM - x), H + GM * 2);
+    const sw = pitch.look === 'parquet' ? 16 : 50; // tablas de madera o franjas de corte
+    for (let i = 0, x = -GM; x < W + GM; x += sw, i++) {
+      g.fillStyle = L.stripes[i % 2];
+      g.fillRect(x, -GM, Math.min(sw, W + GM - x), H + GM * 2);
     }
+    if (pitch.look === 'parquet') { g.fillStyle = 'rgba(28,98,190,0.82)'; g.fillRect(0, 0, W, H); } // pista pintada
     // corte cruzado del césped (damero suave) + luz de focos desde arriba
     for (let i = 0, y = -GM; y < H + GM; y += 64, i++) {
       if (i % 2) { g.fillStyle = 'rgba(255,255,255,0.035)'; g.fillRect(-GM, y, W + GM * 2, Math.min(64, H + GM - y)); }
@@ -463,7 +480,7 @@
     g.fillStyle = light;
     g.fillRect(-GM, -GM, W + GM * 2, H + GM * 2);
     for (let i = 0; i < 14000; i++) {
-      g.fillStyle = Math.random() < 0.5 ? `rgba(0,0,0,${Math.random() * 0.08})` : `rgba(180,255,170,${Math.random() * 0.06})`;
+      g.fillStyle = Math.random() < 0.5 ? `rgba(0,0,0,${Math.random() * 0.08})` : `${L.grain}${Math.random() * 0.06})`;
       g.fillRect(rnd(-GM, W + GM), rnd(-GM, H + GM), 1.2, 1.6);
     }
     // vallas publicitarias
@@ -483,14 +500,15 @@
     g.lineWidth = 2;
     g.strokeRect(0, 0, W, H);
     g.beginPath(); g.moveTo(CX, 0); g.lineTo(CX, H); g.stroke();
-    g.beginPath(); g.arc(CX, CY, 80, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.arc(CX, CY, pitch.circle, 0, Math.PI * 2); g.stroke();
     g.beginPath(); g.arc(CX, CY, 3, 0, Math.PI * 2); g.fill();
-    const arcA = Math.acos((BOX_D - PEN_SPOT) / 80);
+    const arcA = Math.acos(Math.min(1, (BOX_D - PEN_SPOT) / 80));
     for (const s of [0, 1]) {
       const x0 = s ? W : 0, dir = s ? -1 : 1;
       g.strokeRect(s ? W - BOX_D : 0, BOX_TOP, BOX_D, BOX_BOT - BOX_TOP);
-      g.strokeRect(s ? W - 55 : 0, 225, 55, 190);
+      if (pitch.smallH) g.strokeRect(s ? W - pitch.small : 0, CY - pitch.smallH / 2, pitch.small, pitch.smallH);
       g.beginPath(); g.arc(x0 + dir * PEN_SPOT, CY, 2.6, 0, Math.PI * 2); g.fill();
+      if (pitch.look === 'parquet') continue; // en sala no hay medialuna
       g.beginPath();
       if (s) g.arc(W - PEN_SPOT, CY, 80, Math.PI - arcA, Math.PI + arcA);
       else g.arc(PEN_SPOT, CY, 80, -arcA, arcA);
@@ -499,7 +517,8 @@
     for (const [x, y, a0] of [[0, 0, 0], [W, 0, Math.PI / 2], [W, H, Math.PI], [0, H, Math.PI * 1.5]]) {
       g.beginPath(); g.arc(x, y, 9, a0, a0 + Math.PI / 2); g.stroke();
     }
-  })();
+  }
+  buildField();
 
   // ---------- Dibujo ----------
   // Cámara 3/4 estilo TV: el suelo se achata en Y (TILT) y la altura z sube en pantalla K unidades por unidad.
@@ -627,7 +646,7 @@
       for(let i=0;i<=10;i++){const t=i/10;grid.moveTo(lerp(v[0][0],v[1][0],t),lerp(v[0][1],v[1][1],t));grid.lineTo(lerp(v[3][0],v[2][0],t),lerp(v[3][1],v[2][1],t));grid.moveTo(lerp(v[0][0],v[3][0],t),lerp(v[0][1],v[3][1],t));grid.lineTo(lerp(v[1][0],v[2][0],t),lerp(v[1][1],v[2][1],t));}}
     return {fill,grid,x:Math.min(gx,x1)};
   }
-  const leftNet=makeNet(0,-1),rightNet=makeNet(W,1);
+  let leftNet=makeNet(0,-1),rightNet=makeNet(W,1);
   function drawNet(gx){const n=gx===0?leftNet:rightNet;ctx.fillStyle='rgba(0,0,0,.2)';ctx.fillRect(n.x,GOAL_TOP,GOAL_DEPTH,GOAL_BOT-GOAL_TOP);ctx.fillStyle='rgba(255,255,255,.07)';ctx.fill(n.fill);ctx.strokeStyle='rgba(255,255,255,.32)';ctx.lineWidth=.4;ctx.stroke(n.grid);}
   // palo lejano + travesaño (se ordena en y=GOAL_TOP) y palo cercano (en y=GOAL_BOT)
   function drawPost(gx, y, bar) {
@@ -714,7 +733,7 @@
     $('replayTag').classList.remove('show');
   }
 
-  const cam = C.createCamera(W,H);
+  let cam = C.createCamera(W,H);
   let curState = '', renderTick=0,renderTime=0,visualTime=0; // reloj visual de la simulación (también durante el replay)
   const GK_HINT = 'Apuntá · PASE (S) sacá · TIRO (D) despejá';
   const myTeam = () => { const me = roster.get(myPid); return me ? me.team : -1; };
@@ -802,7 +821,7 @@
     g.lineWidth = 1 / sx;
     g.strokeRect(0, 0, W, H);
     g.beginPath(); g.moveTo(CX, 0); g.lineTo(CX, H); g.stroke();
-    g.beginPath(); g.arc(CX, CY, 80, 0, Math.PI * 2); g.stroke();
+    g.beginPath(); g.arc(CX, CY, pitch.circle, 0, Math.PI * 2); g.stroke();
     g.strokeRect(0, BOX_TOP, BOX_D, BOX_BOT - BOX_TOP);
     g.strokeRect(W - BOX_D, BOX_TOP, BOX_D, BOX_BOT - BOX_TOP);
     const scale=ch/VIEW_H,vw=cam.vw||cw/scale,vh=cam.vh||ch/(scale*TILT);
@@ -956,7 +975,13 @@
   }
 
   const itemPool=Array.from({length:27},()=>({y:0,p:null,post:null,ball:false,bar:false})),drawItems=[];
-  const POST_LAYOUT=[{x:0,y:GOAL_TOP,bar:true},{x:0,y:GOAL_BOT,bar:false},{x:W,y:GOAL_TOP,bar:true},{x:W,y:GOAL_BOT,bar:false}];
+  const postLayout=()=>[{x:0,y:GOAL_TOP,bar:true},{x:0,y:GOAL_BOT,bar:false},{x:W,y:GOAL_TOP,bar:true},{x:W,y:GOAL_BOT,bar:false}];
+  let POST_LAYOUT=postLayout();
+  function setPitch(i) {
+    pitch = PITCHES[i];
+    ({ W, H, CX, CY, GOAL_TOP, GOAL_BOT, GOAL_H, BOX_D, BOX_TOP, BOX_BOT, PEN_SPOT } = pitchGeom(pitch));
+    buildField(); leftNet = makeNet(0, -1); rightNet = makeNet(W, 1); POST_LAYOUT = postLayout(); cam = C.createCamera(W, H);
+  }
   function render(v, dt) {
     const scale = ch / VIEW_H, vw = cw / scale, vh = ch / (scale * TILT);
     const me = v.byId.get(myPid);

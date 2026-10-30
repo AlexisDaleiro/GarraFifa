@@ -4,6 +4,7 @@ const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
 const { TEAMS } = require('./public/teams.js');
+const { PITCHES, MODES, pitchGeom } = require('./public/pitches.js');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -14,9 +15,11 @@ const ROOM_GRACE_MS = 60000; // sala vacía por corte de conexión: se guarda pa
 const PORT = process.env.PORT || 3000;
 
 // ---------- Mundo (unidades de juego; 1 unidad ~ 10 cm) ----------
-const W = 1000, H = 640, CX = W / 2, CY = H / 2;
-const GOAL_TOP = 270, GOAL_BOT = 370, GOAL_H = 44, GOAL_DEPTH = 26;
-const BOX_D = 160, BOX_TOP = 150, BOX_BOT = 490, PEN_SPOT = 115;
+// La geometría depende de la cancha de cada sala: usePitch() la carga antes de simular esa sala.
+let W, H, CX, CY, GOAL_TOP, GOAL_BOT, GOAL_H, BOX_D, BOX_TOP, BOX_BOT, PEN_SPOT;
+const GOAL_DEPTH = 26;
+function usePitch(room) { ({ W, H, CX, CY, GOAL_TOP, GOAL_BOT, GOAL_H, BOX_D, BOX_TOP, BOX_BOT, PEN_SPOT } = pitchGeom(PITCHES[room.pitch] || PITCHES[0])); }
+usePitch({ pitch: 0 });
 const TICK = 60, DT_MS = 1000 / TICK;
 const GRAV = 0.32, PR = 9, BALL_R = 4;
 
@@ -25,8 +28,15 @@ const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, PASS: 128, SHOOT: 102
 const DIRS = B.UP | B.DOWN | B.LEFT | B.RIGHT;
 const INPUT_MASK = DIRS | B.SPRINT | B.PASS | B.SHOOT;
 const ST = { run: 0, slide: 1, recover: 2, down: 3, spin: 4, croq: 5, step: 6, fake: 7, rainbow: 8, fooled: 9, hold: 10, dive: 11 };
-const FORMATIONS = { 1: [[320, 320]], 2: [[270, 230], [420, 410]], 3: [[250, 190], [250, 450], [420, 320]] };
-const BOT_NUMS = [9, 7, 11, 10, 8];
+// Formaciones en coordenadas del estadio (1000x640); setHome las escala a la cancha.
+const FORMATIONS = {
+  1: [[320, 320]], 2: [[270, 230], [420, 410]], 3: [[250, 190], [250, 450], [420, 320]],
+  4: [[220, 200], [220, 440], [400, 250], [400, 390]],
+  5: [[200, 320], [260, 170], [260, 470], [420, 240], [420, 400]],
+  6: [[200, 220], [200, 420], [300, 110], [300, 530], [420, 250], [420, 390]],
+  10: [[170, 110], [150, 250], [150, 390], [170, 530], [290, 180], [280, 320], [290, 460], [420, 110], [440, 320], [420, 530]],
+};
+const BOT_NUMS = [9, 7, 11, 10, 8, 6, 5, 4, 3, 2];
 const SP_LABEL = { kickoff: 'SAQUE INICIAL', free: 'TIRO LIBRE', penalty: '¡PENAL!', corner: 'CÓRNER', goalkick: 'SAQUE DE META', throw: 'SAQUE DE BANDA' };
 const HOLD_T = 240; // ticks que el arquero espera la orden de un humano antes de sacar solo
 const CALL_T = 120, CALL_COOL = 150; // pedido visible por 2 s; evita repetirlo al mantener la tecla
@@ -65,9 +75,9 @@ function newBall() {
   return { x: CX, y: CY, z: 0, vx: 0, vy: 0, vz: 0, spin: 0, owner: null, lastTeam: 0, lastPlayer: 0, kicker: 0, inNet: false, netSide: 0 };
 }
 
-function newRoom(hostSid, mode, minutes) {
+function newRoom(hostSid, mode, minutes, pitch = 0) {
   const room = {
-    code: makeCode(), host: hostSid, mode, minutes, members: new Map(), state: 'lobby',
+    code: makeCode(), host: hostSid, mode, minutes, pitch, members: new Map(), state: 'lobby',
     players: [], ball: newBall(), score: [0, 0], timeLeft: 0, tick: 0, sp: null,
     goalT: 0, kickTeam: 0, teams: [0, 1], events: [], nextId: 1, acc: 0,
   };
@@ -114,10 +124,12 @@ function buildRoster(room) {
 }
 
 function setHome(p, f) {
-  p.home = { x: p.team === 0 ? f[0] : W - f[0], y: f[1] };
+  const x = f[0] * W / 1000;
+  p.home = { x: p.team === 0 ? x : W - x, y: f[1] * H / 640 };
 }
 
 function claimBot(room, sid) {
+  usePitch(room);
   const m = room.members.get(sid);
   let p = room.players.find(q => q.kind === 'field' && !q.sid && q.team === m.team);
   if (!p) p = room.players.find(q => q.kind === 'field' && !q.sid);
@@ -150,7 +162,7 @@ function fallFX(room, s, o, duration) {
 
 function roomInfo(r) {
   return {
-    code: r.code, host: r.host, mode: r.mode, minutes: r.minutes, state: r.state, score: r.score, teams: r.teams,
+    code: r.code, host: r.host, mode: r.mode, minutes: r.minutes, pitch: r.pitch, state: r.state, score: r.score, teams: r.teams,
     members: [...r.members].map(([id, { cid, ...m }]) => ({ id, ...m })),
   };
 }
@@ -163,6 +175,7 @@ function emitRoster(r) {
 
 // ---------- Flujo del partido ----------
 function startMatch(room) {
+  usePitch(room);
   visualHistory.delete(room);visualContacts.delete(room);
   buildRoster(room);
   room.score = [0, 0];
@@ -900,6 +913,7 @@ function enforceSetPiece(room) {
 
 // ---------- Tick ----------
 function step(room) {
+  usePitch(room);
   room.tick++;
   if (room.state === 'lobby' || room.state === 'ended') return;
   if (room.state === 'goal') {
@@ -929,6 +943,7 @@ function step(room) {
 }
 
 function snapshot(room) {
+  usePitch(room);
   const b = room.ball;
   const s = {
     t: room.tick, s: room.state, tl: Math.max(0, Math.ceil(room.timeLeft / TICK)), sc: room.score,
@@ -993,9 +1008,10 @@ io.on('connection', socket => {
     if (typeof cb !== 'function') return;
     data = data || {};
     leave();
-    const mode = [1, 2, 3].includes(data.mode) ? data.mode : 2;
+    const mode = MODES.includes(data.mode) ? data.mode : 2;
     const minutes = [3, 5].includes(data.minutes) ? data.minutes : 3;
-    const r = newRoom(socket.id, mode, minutes);
+    const pitch = PITCHES[data.pitch] ? data.pitch : 0;
+    const r = newRoom(socket.id, mode, minutes, pitch);
     join(r, data.profile, data.cid);
     cb({ ok: true, code: r.code });
   });
@@ -1006,7 +1022,7 @@ io.on('connection', socket => {
     const code = String(data.code || '').toUpperCase().trim().slice(0, 4);
     const r = rooms.get(code);
     if (!r) return cb({ ok: false, error: 'Sala no encontrada' });
-    if (r.members.size >= 12) return cb({ ok: false, error: 'Sala llena' });
+    if (r.members.size >= 22) return cb({ ok: false, error: 'Sala llena' });
     if (room === r) return cb({ ok: true, code });
     leave();
     join(r, data.profile, data.cid, data.team);
@@ -1034,7 +1050,8 @@ io.on('connection', socket => {
 
   socket.on('settings', data => {
     if (!room || room.host !== socket.id || room.state !== 'lobby' || !data) return;
-    if ([1, 2, 3].includes(data.mode)) room.mode = data.mode;
+    if (MODES.includes(data.mode)) room.mode = data.mode;
+    if (Number.isInteger(data.pitch) && PITCHES[data.pitch]) room.pitch = data.pitch;
     if ([3, 5].includes(data.minutes)) room.minutes = data.minutes;
     const t = data.teams;
     if (Array.isArray(t) && t.length === 2 && t.every(i => Number.isInteger(i) && i >= 0 && i < TEAMS.length) && t[0] !== t[1]) room.teams = [t[0], t[1]];
@@ -1228,8 +1245,8 @@ function selfTest() {
     rooms.delete(r.code);
   }
   // 6) Partidos completos solo con bots: sin NaN y terminan.
-  for (const mode of [1, 2, 3]) {
-    const r = newRoom('t', mode, 3);
+  for (const [mode, pitch] of [[1, 0], [2, 0], [3, 0], [4, 2], [6, 1], [10, 0]]) {
+    const r = newRoom('t', mode, 3, pitch);
     startMatch(r);
     const kinds = new Set();
     let guard = 0;
@@ -1240,7 +1257,7 @@ function selfTest() {
       for (const p of r.players) assert(Number.isFinite(p.x + p.y + p.face), 'jugador NaN');
     }
     assert.strictEqual(r.state, 'ended');
-    console.log(`${mode}v${mode} bots: ${r.score.join('-')} | eventos: ${[...kinds].join(', ')}`);
+    console.log(`${mode}v${mode} ${PITCHES[pitch].name} bots: ${r.score.join('-')} | eventos: ${[...kinds].join(', ')}`);
     rooms.delete(r.code);
   }
   console.log('selftest OK');
