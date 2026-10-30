@@ -1,11 +1,14 @@
 /* Three.js r184. Geometría y texturas compartidas; esqueleto, materiales y mixer por jugador. */
 (function (root) {
   'use strict';
+  const C=typeof module!=='undefined'?require('./continuity'):root.FootballContinuity;
   const FX=typeof module!=='undefined'?require('./toon-fx'):root.ToonFX;
   const CADENCE=1.55;
   const ATLAS={columns:6,rows:4,tileW:72,tileH:80,base:20};
   const CROSSFADE = 0.15;
   const CLIPS = ['idle','jog','sprint','kick','pass','slide','gk_dive','celebrate'];
+  const RUNS=new Set(['jog','sprint']),GROUNDED=new Set(['slide','down','recover']),STILL=new Set(['hold','fake','fooled']);
+  const SUPPORT=new Set(['run','hold','fake','fooled','step']);
   const ONCE = new Set(['kick','pass','slide','gk_dive']);
   const SKINS = ['#edbd96','#d6a078','#b77b54','#754a35','#f4cfaa'];
   const HAIRS = ['#201b19','#38251e','#71492d','#ba965a','#141518'];
@@ -18,9 +21,9 @@
     if(options.fx?.fall||p.st==='down') return 'idle';
     if(options.celebrate) return 'celebrate';
     if(p.st==='dive') return 'gk_dive';
-    if(['slide','down','recover'].includes(p.st)) return 'slide';
+    if(GROUNDED.has(p.st)) return 'slide';
     if(p.flags&4) return p.flags&32?'pass':'kick';
-    if(['hold','fake','fooled'].includes(p.st)||(anim.speed||0)<0.12) return 'idle';
+    if(STILL.has(p.st)||(anim.speed||0)<0.12) return 'idle';
     return (p.flags&2)||(anim.sprint||0)>0.5?'sprint':'jog';
   }
   function materialRole(material,mesh) {
@@ -40,37 +43,48 @@
     return {shirt:kit.c1,shorts:kit.sh,socks:kit.so,skin:SKINS[id%SKINS.length],hair:HAIRS[(id*7)%HAIRS.length]};
   }
   // Control separado del renderer para verificar transiciones y velocidad sin WebGL.
+  const BASE=new Set(['idle','jog','sprint']);
+  function fadeDuration(from,to){
+    if(ONCE.has(to))return .08;
+    if(ONCE.has(from))return .20;
+    if(from==='idle'||to==='idle')return .24;
+    return from!==to?.18:CROSSFADE;
+  }
   function updateAction(actor,p,anim,options,dt) {
+    dt=Math.max(0,Math.min(.05,dt));
+    const raw=Math.max(0,anim.speed||0);
+    actor.filteredSpeed=actor.filteredSpeed===undefined?raw:actor.filteredSpeed+(raw-actor.filteredSpeed)*C.alpha(dt,.09);
+    actor.clipAge=(actor.clipAge??1)+dt;
+    if(actor.moving===undefined)actor.moving=raw>.20;
+    else if(actor.moving?actor.filteredSpeed<.07:actor.filteredSpeed>.20)actor.moving=!actor.moving;
     let name=selectClip(p,anim,options);
-    if(actor.identity?.body.crutches&&['jog','sprint'].includes(name))name='idle';
-    if(actor.current && ONCE.has(actor.current) && actor.action.isRunning() &&
-       ['idle','jog','sprint'].includes(name)) name=actor.current;
-    const kick=!!(p.flags&4),retrigger=kick&&!actor.lastKick&&['kick','pass'].includes(name);
-    actor.lastKick=kick;
-    if(name!==actor.current||retrigger) {
-      const next=actor.actions[name];
-      if(!next) throw new Error('Falta el clip '+name);
-      const previous=actor.action,previousName=actor.current;
+    if(BASE.has(name)&&p.st==='run'&&!options.fx?.fall&&!options.fx?.goal&&!options.celebrate){
+      const sprint=(anim.sprint??(p.flags&2?1:0));
+      actor.fast=actor.fast?sprint>.35:sprint>.65;
+      name=actor.moving?(actor.fast?'sprint':'jog'):'idle';
+    }
+    if(actor.identity?.body.crutches&&BASE.has(name))name='idle';
+    const force=options.fx?.fall||options.fx?.goal||p.st!=='run';
+    if(actor.current&&ONCE.has(actor.current)&&actor.action.isRunning()&&BASE.has(name)&&!force)name=actor.current;
+    if(actor.current&&BASE.has(name)&&BASE.has(actor.current)&&actor.clipAge<.18&&!force)name=actor.current;
+    const kick=!!(p.flags&4),retrigger=kick&&!actor.lastKick&&['kick','pass'].includes(name);actor.lastKick=kick;
+    if(name!==actor.current||retrigger){
+      const next=actor.actions[name];if(!next)throw new Error('Falta el clip '+name);
+      const previous=actor.action,previousName=actor.current,duration=fadeDuration(previousName,name);
       next.reset().setEffectiveWeight(1).setEffectiveTimeScale(1).play();
-      if(previous&&previous!==next) {
-        if(['jog','sprint'].includes(name)&&['jog','sprint'].includes(previousName)) {
-          next.time=(previous.time%previous.getClip().duration)/previous.getClip().duration*next.getClip().duration;
-        }
-        next.crossFadeFrom(previous,CROSSFADE,false);
-        actor.retiring=actor.retiring||[];actor.retiring.push({action:previous,left:CROSSFADE});
+      if(previous&&previous!==next){
+        if(RUNS.has(name)&&RUNS.has(previousName))next.time=(previous.time%previous.getClip().duration)/previous.getClip().duration*next.getClip().duration;
+        next.crossFadeFrom(previous,duration,false);
+        if(!actor.retiring){actor.retiring=Array.from({length:16},()=>({action:null,left:0}));actor.retiringCount=0;}
+        if(actor.retiringCount===16){actor.retiring[0].action.stop();for(let i=1;i<16;i++){actor.retiring[i-1].action=actor.retiring[i].action;actor.retiring[i-1].left=actor.retiring[i].left;}actor.retiringCount=15;}
+        const fade=actor.retiring[actor.retiringCount++];fade.action=previous;fade.left=duration;
       }
-      actor.current=name;actor.action=next;
+      actor.current=name;actor.action=next;actor.clipAge=0;
     }
     const locomotion=name==='jog'||name==='sprint';
-    // anim.speed está en unidades/tick del servidor de 60 Hz.
-    actor.action.setEffectiveTimeScale(locomotion?(Math.max(0,anim.speed||0)*60/actor.referenceSpeed[name]*CADENCE):1);
-    actor.mixer.update(Math.max(0,dt));
-    actor.retiring=(actor.retiring||[]).filter(fade=>{
-      if(fade.action===actor.action) return false;
-      fade.left-=Math.max(0,dt);
-      if(fade.left<=0){fade.action.stop();return false;}
-      return true;
-    });
+    actor.action.setEffectiveTimeScale(locomotion?actor.filteredSpeed*60/actor.referenceSpeed[name]*CADENCE:1);
+    actor.mixer.update(dt);
+    if(actor.retiring){let n=0;for(let i=0;i<actor.retiringCount;i++){const fade=actor.retiring[i];if(fade.action===actor.action)continue;fade.left-=dt;if(fade.left<=0)fade.action.stop();else{const keep=actor.retiring[n++];keep.action=fade.action;keep.left=fade.left;}}actor.retiringCount=n;}
   }
   // Estilo caricatura: cabeza enorme, manos y pies grandes, sombreado plano y contorno de tinta.
   const INK='#2b1a12',INK_WIDTH=0.32;
@@ -149,10 +163,10 @@
   }
   function bodyScales(actor){
     const body=actor.identity.body;
-    for(const [name,r] of Object.entries(actor.rig)){
-      const f=/^spine_0[12]$/.test(name)?body.spine:/^thigh_/.test(name)?body.leg:/^upperarm_/.test(name)?body.arm:null;
+    for(const r of actor.rigList){
+      const f=r.factor;
       if(f)r.bone.scale.set(r.scale.x*f[0],r.scale.y*f[1],r.scale.z*f[2]);
-      if(/^foot_/.test(name)&&body.feet)r.bone.scale.multiplyScalar(body.feet);
+      if(r.foot&&body.feet)r.bone.scale.multiplyScalar(body.feet);
     }
     actor.object.scale.set(actor.baseScale*body.height*body.width,actor.baseScale*body.height,actor.baseScale*body.height);
   }
@@ -186,7 +200,7 @@
   }
   function createBackend(THREE,clone,asset,clips,config=CONFIG,rendererFactory) {
     const actors=new Map(),scene=new THREE.Scene();
-    const {columns,rows,tileW,tileH,base}=ATLAS,resolution=3;
+    const {columns,rows,tileW,tileH,base}=ATLAS,resolution=config.resolution||(typeof window!=='undefined'&&window.innerWidth<600?2:3);
     const renderer=rendererFactory?rendererFactory():new THREE.WebGLRenderer({alpha:true,antialias:true,preserveDrawingBuffer:true});
     renderer.setPixelRatio(1);renderer.setSize(columns*tileW*resolution,rows*tileH*resolution,false);
     renderer.setClearColor(0,0);renderer.outputColorSpace=THREE.SRGBColorSpace;
@@ -218,7 +232,8 @@
       if(measured>0.01) speed[name]=measured;
       else warnings.push('No se pudo medir el apoyo de '+name+'; calibrar referenceSpeed para este asset.');
     }
-    let seen=new Set(),lastTime=null,renderCount=0,lastDt=0;
+    const seen=new Set(),metrics={maxPositionStep:0,maxRotationStep:0,maxPoseStep:0};
+    let lastTime=null,preparedFrame=null,renderCount=0,lastDt=0;
     function create(key,info) {
       if(!available.length) throw new Error('El atlas admite hasta 24 modelos (22 jugadores y vista previa)');
       const object=clone(asset),pivot=new THREE.Group(),slot=new THREE.Group();
@@ -247,7 +262,7 @@
       }
       const actor={key,index,object,pivot,motion,slot,mixer,actions,materials,referenceSpeed:speed,info,baseScale:scale,baseY:object.position.y,current:null,action:null,lastSeen:0,signature:'',bones:[]};
       if(toon) stylize(THREE,shared,actor);
-      actor.rig={};object.traverse(n=>{if(n.isBone)actor.rig[n.name]={bone:n,q:n.quaternion.clone(),scale:n.scale.clone()};});
+      actor.rig={};actor.rigList=[];object.traverse(n=>{if(n.isBone){const r={bone:n,q:n.quaternion.clone(),scale:n.scale.clone()};const body=actor.identity?.body;r.factor=body?(/^spine_0[12]$/.test(n.name)?body.spine:/^thigh_/.test(n.name)?body.leg:/^upperarm_/.test(n.name)?body.arm:null):null;r.foot=/^foot_/.test(n.name);actor.rig[n.name]=r;actor.rigList.push(r);}});
       if(actor.identity){
         // Bajar la pelvis lo que acortaron las piernas: los pies siguen apoyando.
         const feet=['foot_l','foot_r'].map(n=>actor.rig[n]?.bone).filter(Boolean),v=new THREE.Vector3();
@@ -255,9 +270,20 @@
         const before=feet.length?floor():0;bodyScales(actor);const after=feet.length?floor():0;
         actor.baseY=actor.baseY*actor.identity.body.height+(before-after)*scale*actor.identity.body.height;
       }
+      actor.metricQ=toon?actor.motion.quaternion.clone():null;
+      actor.retiring=Array.from({length:16},()=>({action:null,left:0}));actor.retiringCount=0;
+      actor.visual={x:0,y:0};actor.fallPose={};actor.state={p:{},anim:{},options:{}};
+      actor.poseNodes=[];
+      if(toon){
+        const nodes=[actor.motion,actor.object];for(const r of actor.rigList)nodes.push(r.bone);
+        if(actor.features){for(const parts of [actor.features.pupils,actor.features.brows,actor.features.tears])for(const part of parts)nodes.push(part.m,part.o);nodes.push(actor.features.mouth.m,actor.features.mouth.o,actor.features.teeth.m,actor.features.teeth.o,...actor.features.spirals);}
+        if(actor.crutches)nodes.push(actor.crutches.group);
+        for(const n of nodes)actor.poseNodes.push({n,p:n.position.clone(),q:n.quaternion.clone(),s:n.scale.clone(),shown:n.visible?1:0,ready:false});
+      }
       actors.set(key,actor);return actor;
     }
     function tint(actor,kit,info) {
+      if(actor.kit===kit&&actor.tintId===info.id)return;actor.kit=kit;actor.tintId=info.id;
       const colors=palette(kit,info.id),signature=JSON.stringify(colors);
       if(actor.signature===signature) return;
       for(const {material,role,base} of actor.materials) {
@@ -273,44 +299,50 @@
       available.push(actor.index);actors.delete(actor.key); // Nunca destruir geometrías/texturas compartidas.
     }
     function render(time) {
-      const delta=lastTime===null?0:Math.max(0,(time-lastTime)/1000);lastTime=time;lastDt=delta;
+      const delta=lastTime===null?0:Math.min(.05,Math.max(0,(time-lastTime)/1000));lastTime=time;lastDt=delta;
       for(const actor of actors.values()) {
         if(time-actor.lastSeen>10000){remove(actor);continue;}
         if(!actor.state) continue;
         const {p,anim,options}=actor.state;
-        for(const r of Object.values(actor.rig)){r.bone.quaternion.copy(r.q);r.bone.scale.copy(r.scale);}
+        for(const r of actor.rigList){r.bone.quaternion.copy(r.q);r.bone.scale.copy(r.scale);}
         updateAction(actor,p,anim,options,delta);
         for(const [bone,s] of actor.bones) bone.scale.setScalar(s); // Después del mixer, por si un clip anima escala.
         if(actor.identity)bodyScales(actor);
         const face=anim.moveFace===undefined||anim.speed<0.12?p.face:anim.moveFace;
-        actor.object.rotation.y=Math.PI/2-face;
+        const target=Math.PI/2-face;actor.heading=actor.heading===undefined?target:C.turn(actor.heading,target,delta,9);
+        actor.object.rotation.y=actor.heading;
         applyProcedural(actor,p,options);
         applyVariety(actor,p,anim,options);
+        smoothPose(actor,delta);
+        metrics.maxPoseStep=Math.max(metrics.maxPoseStep,actor.poseStep||0);
+        if(actor.previousX!==undefined&&p.alpha!==0)metrics.maxPositionStep=Math.max(metrics.maxPositionStep,Math.hypot((p.x||0)-actor.previousX,(p.y||0)-actor.previousY));
+        if(actor.previousHeading!==undefined)metrics.maxRotationStep=Math.max(metrics.maxRotationStep,Math.abs(C.angle(actor.previousHeading,actor.heading)));
+        if(actor.metricQ){metrics.maxPoseStep=Math.max(metrics.maxPoseStep,actor.metricQ.angleTo(actor.motion.quaternion));actor.metricQ.copy(actor.motion.quaternion);}
+        actor.previousX=p.x||0;actor.previousY=p.y||0;actor.previousHeading=actor.heading;
       }
       renderer.render(scene,camera);renderCount++;
     }
-    function draw(g,p,info,kit,anim={},options={}) {
+    function prepare(p,info,kit,anim,options,time=options.time){
       const key=p.id===undefined?'preview':p.id;
-      const time=options.time===undefined?performance.now():options.time;
-      // Primer ID repetido = siguiente cuadro: draw() no necesita un frameId nuevo en game.js.
-      const fresh=seen.has(key)||lastTime===null;
-      if(fresh) seen=new Set();
-      // Liberar instancias de una partida anterior antes de ocupar una nueva casilla.
-      for(const a of actors.values()) if(time-a.lastSeen>10000) remove(a);
       const actor=actors.get(key)||create(key,info);
-      actor.lastSeen=time;actor.state={p:{...p},anim:{...anim},options:{...options}};tint(actor,kit,info);
-      seen.add(key);
-      if(fresh) render(time);
-      // Las casillas nuevas aparecen al siguiente cuadro; la animación del resto se renderiza una sola vez.
+      actor.lastSeen=time;Object.assign(actor.state.p,p);Object.assign(actor.state.anim,anim);Object.assign(actor.state.options,options);tint(actor,kit,info);return actor;
+    }
+    function draw(g,p,info,kit,anim={},options={}) {
+      const key=p.id===undefined?'preview':p.id,time=options.time===undefined?performance.now():options.time;
+      const fresh=seen.has(key)||lastTime===null;if(fresh)seen.clear();
+      const actor=preparedFrame===time&&actors.has(key)?actors.get(key):prepare(p,info,kit,anim,options,time);
+      seen.add(key);if(fresh&&lastTime!==time)render(time);
       const x=(actor.index%columns)*tileW*resolution,y=Math.floor(actor.index/columns)*tileH*resolution;
-      const visual=actor.visual||{x:0,y:0};
-      g.imageSmoothingEnabled=true;g.drawImage(renderer.domElement,x,y,tileW*resolution,tileH*resolution,-tileW/2+visual.x,base-tileH+visual.y*.78,tileW,tileH);
+      g.imageSmoothingEnabled=true;g.drawImage(renderer.domElement,x,y,tileW*resolution,tileH*resolution,-tileW/2+(actor.visualX??actor.visual.x),base-tileH+(actor.visualY??actor.visual.y)*.78,tileW,tileH);
     }
     function dispose(){for(const actor of Array.from(actors.values()))remove(actor);renderer.dispose();}
-    function stats(){return {players:actors.size,mixers:actors.size,renderers:1,renders:renderCount,lastFrameSeconds:lastDt,warnings:[...warnings]};}
-    return {draw,dispose,stats,actors,renderer};
+    function stats(){return {players:actors.size,mixers:actors.size,renderers:1,renders:renderCount,lastFrameSeconds:lastDt,atlasResolution:resolution,warnings:[...warnings],...metrics};}
+    return {draw,prepare,renderFrame(time){preparedFrame=time;render(time);},resetMetrics(){metrics.maxPositionStep=metrics.maxRotationStep=metrics.maxPoseStep=0;},dispose,stats,actors,renderer};
   }
   // Todo el movimiento cómico se aplica después del mixer y se restaura cada cuadro.
+  function bend(actor,name,x=0,z=0){const b=actor.rig[name]?.bone;if(b){b.rotation.x+=x;b.rotation.z+=z;}}
+  function poseBend(actor,name,x,y,z){const b=actor.rig[name]?.bone;if(b){b.rotation.x+=x;b.rotation.y+=y;b.rotation.z+=z;}}
+  function partShape(part,x,y,z){part.m.scale.set(x,y,z);part.o.scale.set(x*1.22,y*1.22,z*1.22);}
   function applyVariety(actor,p,anim,options){
     const tick=options.fx?.tick??(options.time||0)*.06,phase=tick*.24+(Number(p.id)||0),moving=p.st==='run'?clamp((anim.speed||0)/2.5,0,1):0;
     if(actor.belly){
@@ -318,24 +350,23 @@
       actor.belly.scale.set(s*(1+wobble),s*(1-wobble*.5),s*(1+wobble*.5));
     }
     if(!actor.crutches)return;
-    const active=!options.fx?.fall&&!options.fx?.goal&&['run','hold','fake','fooled','step'].includes(p.st);
-    actor.crutches.group.visible=active;if(!active)return;
+    const active=!options.fx?.fall&&!options.fx?.goal&&SUPPORT.has(p.st);
+    actor.crutches.group.visible=active;actor.crutches.group.scale.setScalar(1/actor.baseScale);if(!active)return;
     const hop=Math.max(0,Math.sin(phase))*moving;
     actor.motion.position.y+=hop*2.2;actor.motion.rotation.z+=Math.sin(phase)*moving*.035;
-    for(const [i,pole] of actor.crutches.poles.entries()){
+    for(let i=0;i<actor.crutches.poles.length;i++){const pole=actor.crutches.poles[i];
       pole.rotation.x=Math.sin(phase)*moving*.3;pole.rotation.z=(i?1:-1)*.09;
       pole.position.z=.3+Math.cos(phase)*moving*1.1;
     }
-    const bend=(name,x,z=0)=>{const b=actor.rig[name]?.bone;if(b){b.rotation.x+=x;b.rotation.z+=z;}};
-    bend('upperarm_l',-.28,-.12);bend('upperarm_r',-.28,.12);
-    bend('lowerarm_l',-.55);bend('lowerarm_r',-.55);
-    bend('thigh_r',-.3-moving*.2);bend('calf_r',.8+moving*.25);
-    bend('thigh_l',Math.sin(phase)*moving*.18);
+    bend(actor,'upperarm_l',-.28,-.12);bend(actor,'upperarm_r',-.28,.12);
+    bend(actor,'lowerarm_l',-.55);bend(actor,'lowerarm_r',-.55);
+    bend(actor,'thigh_r',-.3-moving*.2);bend(actor,'calf_r',.8+moving*.25);
+    bend(actor,'thigh_l',Math.sin(phase)*moving*.18);
   }
   function applyProcedural(actor,p,options) {
     const f=options.fx?.fall,tick=options.fx?.tick||0,m=actor.motion;
     m.rotation.order='YXZ';m.rotation.x=m.rotation.y=m.rotation.z=0;m.position.set(0,0,0);m.scale.setScalar(1);
-    actor.visual={x:0,y:0};actor.object.position.y=actor.baseY;
+    actor.visual.x=actor.visual.y=0;actor.object.position.y=actor.baseY;
     updateFace(actor,p,options);
     if(options.fx?.goal){applyCelebration(actor,p,options);return;}
     if(!f){
@@ -345,51 +376,49 @@
       applyReaction(actor,p,options);
       return;
     }
-    const pose=FX.fallPose(f,tick),age=tick-f.tick;
+    const pose=FX.fallPose(f,tick,actor.fallPose),age=tick-f.tick;
     const recovery=age>f.duration?1-clamp((age-f.duration)/18,0,1):1;
-    const bend=(name,x,y,z)=>{const b=actor.rig[name]?.bone;if(b){b.rotation.x+=x;b.rotation.y+=y;b.rotation.z+=z;}};
     // El centro de giro queda en la cintura, para apoyar el cuerpo en el césped.
     m.position.y=(15-pose.drop+pose.height)*recovery;
     actor.object.position.y=actor.baseY-15*recovery;
-    const short=a=>Math.atan2(Math.sin(a),Math.cos(a)),recovering=age>=f.duration;
+    const recovering=age>=f.duration;
     m.rotation.order=pose.variant===2?'YZX':'YXZ';
-    m.rotation.x=(recovering?short(pose.rx):pose.rx)*recovery;m.rotation.z=(recovering?short(pose.rz):pose.rz)*recovery;
+    m.rotation.x=(recovering?C.angle(0,pose.rx):pose.rx)*recovery;m.rotation.z=(recovering?C.angle(0,pose.rz):pose.rz)*recovery;
     const heading=Math.PI/2-Math.atan2(f.dy,f.dx),target=Math.PI/2-p.face;
-    m.rotation.y=heading+short(target-heading)*(1-recovery)+(recovering?short(pose.ry):pose.ry)*recovery;
+    m.rotation.y=heading+C.angle(heading,target)*(1-recovery)+(recovering?C.angle(0,pose.ry):pose.ry)*recovery;
     actor.object.rotation.y=0;
     const sy=1+(pose.squash-1)*recovery;m.scale.set(1/Math.sqrt(sy),sy,1/Math.sqrt(sy));
-    actor.visual={x:f.dx*pose.distance*recovery,y:f.dy*pose.distance*recovery};
-    bend('upperarm_l',0,0,-pose.arms*recovery);bend('upperarm_r',0,0,pose.arms*recovery);
-    bend('thigh_l',pose.flail*recovery,0,0);bend('thigh_r',-pose.flail*recovery,0,0);
-    if(pose.variant===3){bend('thigh_l',-1.4*recovery,0,0);bend('thigh_r',-1.4*recovery,0,0);}
-    if(pose.variant===5){bend('lowerarm_l',-1.9*recovery,0,0);bend('thigh_l',-.9*recovery,0,0);}
+    actor.visual.x=f.dx*pose.distance*recovery;actor.visual.y=f.dy*pose.distance*recovery;
+    poseBend(actor,'upperarm_l',0,0,-pose.arms*recovery);poseBend(actor,'upperarm_r',0,0,pose.arms*recovery);
+    poseBend(actor,'thigh_l',pose.flail*recovery,0,0);poseBend(actor,'thigh_r',-pose.flail*recovery,0,0);
+    if(pose.variant===3){poseBend(actor,'thigh_l',-1.4*recovery,0,0);poseBend(actor,'thigh_r',-1.4*recovery,0,0);}
+    if(pose.variant===5){poseBend(actor,'lowerarm_l',-1.9*recovery,0,0);poseBend(actor,'thigh_l',-.9*recovery,0,0);}
   }
   function applyCelebration(actor,p,options){
     const fx=options.fx,e=fx.goal,t=(fx.tick-e.tick)/60,m=actor.motion;
-    const bend=(name,x=0,z=0)=>{const b=actor.rig[name]?.bone;if(b){b.rotation.x+=x;b.rotation.z+=z;}};
     const win=e.team===fx.team,near=e.celebrants?.includes(p.id),style=FX.hash(p.id+e.tick)%4;
     const ramp=Math.min(1,t*4),exit=clamp((420-(fx.tick-e.tick))/24,0,1),weight=ramp*exit;
     if(win){
-      if(!near){bend('upperarm_l',0,-.9*weight);bend('upperarm_r',0,.9*weight);return;}
+      if(!near){bend(actor,'upperarm_l',0,-.9*weight);bend(actor,'upperarm_r',0,.9*weight);return;}
       if(style===0){ // Avioncito: torso inclinado y alas extendidas.
-        bend('upperarm_l',0,-1.5*weight);bend('upperarm_r',0,1.5*weight);
+        bend(actor,'upperarm_l',0,-1.5*weight);bend(actor,'upperarm_r',0,1.5*weight);
         m.rotation.x=-.3*weight;m.rotation.z=Math.sin(t*4)*.18*weight;
-        actor.visual={x:Math.sin(t*2)*12*weight,y:Math.cos(t*2)*5*weight};
+        actor.visual.x=Math.sin(t*2)*12*weight;actor.visual.y=Math.cos(t*2)*5*weight;
       }else if(style===1){m.rotation.z=Math.sin(t*9)*.18*weight;}
       else if(style===2){ // Panza al pasto, dentro de la pausa existente.
         m.position.y=5*weight;actor.object.position.y=actor.baseY-15*weight;m.rotation.x=Math.PI/2*weight;
-        actor.visual={x:Math.cos(p.face)*Math.min(t*14,22)*weight,y:Math.sin(p.face)*Math.min(t*14,22)*weight};
-        bend('upperarm_l',0,-1.3*weight);bend('upperarm_r',0,1.3*weight);
+        actor.visual.x=Math.cos(p.face)*Math.min(t*14,22)*weight;actor.visual.y=Math.sin(p.face)*Math.min(t*14,22)*weight;
+        bend(actor,'upperarm_l',0,-1.3*weight);bend(actor,'upperarm_r',0,1.3*weight);
       }else{
         const jump=Math.abs(Math.sin(t*6));m.position.y=jump*10*weight;
         const sy=1+(.22*jump-.12)*weight;m.scale.set(1/Math.sqrt(sy),sy,1/Math.sqrt(sy));
-        bend('upperarm_l',-.8*weight,-1.1*weight);bend('upperarm_r',-.8*weight,1.1*weight);
+        bend(actor,'upperarm_l',-.8*weight,-1.1*weight);bend(actor,'upperarm_r',-.8*weight,1.1*weight);
       }
     }else{
       const sad=FX.hash(p.id)%3;
       if(sad===0){m.rotation.x=-Math.PI/2*weight;m.position.y=5*weight;actor.object.position.y=actor.baseY-15*weight;}
-      else if(sad===1){bend('spine_02',.45*weight);bend('Head',.4*weight);bend('upperarm_l',.3*weight);bend('upperarm_r',.3*weight);}
-      else{m.rotation.x=-Math.PI/2*weight;m.position.y=5*weight;actor.object.position.y=actor.baseY-15*weight;bend('thigh_l',Math.sin(t*16)*.8*weight);bend('thigh_r',-Math.sin(t*16)*.8*weight);}
+      else if(sad===1){bend(actor,'spine_02',.45*weight);bend(actor,'Head',.4*weight);bend(actor,'upperarm_l',.3*weight);bend(actor,'upperarm_r',.3*weight);}
+      else{m.rotation.x=-Math.PI/2*weight;m.position.y=5*weight;actor.object.position.y=actor.baseY-15*weight;bend(actor,'thigh_l',Math.sin(t*16)*.8*weight);bend(actor,'thigh_r',-Math.sin(t*16)*.8*weight);}
     }
   }
   function applyReaction(actor,p,options){
@@ -398,11 +427,11 @@
     if(fx.hit){
       const hit=fx.hit,t=clamp((tick-hit.tick)/24,0,1),pulse=Math.sin(Math.PI*t),sign=hit.id===p.id?-1:1,sy=1-.28*Math.sin(Math.PI*clamp(t*2,0,1));
       m.scale.set(1/Math.sqrt(sy),sy,1/Math.sqrt(sy));m.position.y+=pulse*5;
-      actor.visual={x:(hit.dx??1)*sign*pulse*8,y:(hit.dy||0)*sign*pulse*8};
+      actor.visual.x=(hit.dx??1)*sign*pulse*8;actor.visual.y=(hit.dy||0)*sign*pulse*8;
     }
     if(fx.post){
       const e=fx.post,t=clamp((tick-e.tick)/42,0,1),pulse=Math.sin(Math.PI*t),dx=e.x-p.x,dy=e.y-p.y,d=Math.hypot(dx,dy)||1;
-      actor.visual={x:dx/d*Math.min(d,18)*pulse,y:dy/d*Math.min(d,18)*pulse};
+      actor.visual.x=dx/d*Math.min(d,18)*pulse;actor.visual.y=dy/d*Math.min(d,18)*pulse;
       m.rotation.z=(dx<0?1:-1)*pulse*1.35;m.scale.set(1.28,1/1.28,1);m.position.y+=3*pulse;
     }
   }
@@ -410,17 +439,30 @@
     const face=actor.features;if(!face)return;
     const fx=options.fx||{},cry=fx.goal&&fx.goal.team!==fx.team,dizzy=!!fx.fall||!!fx.daze,angry=p.st==='slide';
     const open=!!(p.flags&4)||!!fx.shot,sprint=!!(p.flags&2),tick=fx.tick||0;
-    const shape=(part,x,y,z)=>{part.m.scale.set(x,y,z);part.o.scale.set(x*1.22,y*1.22,z*1.22);};
-    face.pupils.forEach((part,i)=>{
+    for(let i=0;i<face.pupils.length;i++){const part=face.pupils[i];
       part.m.visible=part.o.visible=!dizzy;const side=i?1:-1;
       part.m.position.x=side*(dizzy?.15:.45);part.o.position.x=part.m.position.x;
+      partShape(part,.22,.26,.08);partShape(face.tears[i],.18,.6,.13);face.spirals[i].scale.setScalar(1);
       const brow=face.brows[i];brow.m.rotation.z=brow.o.rotation.z=angry?side*.45:cry?-side*.3:0;
       const tear=face.tears[i];tear.m.visible=tear.o.visible=!!cry;
-      tear.m.position.y=tear.o.position.y=1.7-(tick%12)/18;
+      tear.m.position.y=tear.o.position.y=1.45+.25*Math.sin(tick*.28);
       face.spirals[i].visible=dizzy;face.spirals[i].rotation.z=tick*.13;
-    });
-    shape(face.mouth,open?.52:cry?.4:.48,open?.6:cry?.35:sprint?.23:.13,.15);
+    }
+    partShape(face.teeth,.38,.1,.05);
+    partShape(face.mouth,open?.52:cry?.4:.48,open?.6:cry?.35:sprint?.23:.13,.15);
     face.teeth.m.visible=face.teeth.o.visible=sprint&&!open&&!cry;
+  }
+  function smoothPose(actor,dt){
+    const k=C.alpha(dt,.035),visibility=C.alpha(dt,.045);
+    actor.poseStep=0;
+    for(const c of actor.poseNodes){
+      const n=c.n,target=n.visible?1:0;
+      if(!c.ready){c.p.copy(n.position);c.q.copy(n.quaternion);c.s.copy(n.scale);c.shown=target;c.ready=true;}
+      else{const distance=c.q.angleTo(n.quaternion),rotation=C.rotationAlpha(distance,dt,n===actor.motion?60:24);c.p.lerp(n.position,k);c.q.slerp(n.quaternion,rotation);c.s.lerp(n.scale,k);c.shown+=(target-c.shown)*visibility;if(c.shown>.002)actor.poseStep=Math.max(actor.poseStep,distance*rotation);}
+      n.position.copy(c.p);n.quaternion.copy(c.q);n.scale.copy(c.s);n.visible=c.shown>.002;
+      if(c.shown<.999)n.scale.multiplyScalar(Math.max(.001,c.shown));
+    }
+    const k2=C.alpha(dt,.04);actor.visualX=actor.visualX===undefined?actor.visual.x:actor.visualX+(actor.visual.x-actor.visualX)*k2;actor.visualY=actor.visualY===undefined?actor.visual.y:actor.visualY+(actor.visual.y-actor.visualY)*k2;
   }
   function inPlace(THREE,clip,asset) {
     const result=clip.clone();
@@ -499,6 +541,9 @@
     } catch(e){failure=e;report('No se pudieron cargar los jugadores: '+e.message,true);return null;}
   }
   const api={
+    resetMetrics(){backend?.resetMetrics();},
+    prepare(p,info,kit,anim,options){backend?.prepare(p,info,kit,anim,options);},
+    renderFrame(time){backend?.renderFrame(time);},
     draw(g,p,info,kit,anim={},options={}) {
       if(backend) return backend.draw(g,p,info,kit,anim,options);
       lastDraw={g,p,info,kit,anim,options,transform:g.getTransform()};
@@ -509,5 +554,5 @@
     dispose(){backend?.dispose();backend=null;loading=null;failure=null;lastDraw=null;},
   };
   root.FootballPlayer3D=api;
-  if(typeof module!=='undefined') module.exports={FootballPlayer3D:api,selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CROSSFADE,CLIPS,CONFIG,CADENCE,ATLAS};
+  if(typeof module!=='undefined') module.exports={FootballPlayer3D:api,selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CROSSFADE,CLIPS,CONFIG,CADENCE,ATLAS,fadeDuration};
 })(typeof module!=='undefined'?module.exports:window);

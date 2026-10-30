@@ -35,4 +35,6 @@ assert(late.options(p,info,160,'goal').goal);
 assert.equal(late.options(p,info,160,'setpiece').goal,null,'el festejo termina con la pausa del gol');
 assert(fallPose({...event.fall,tick:100},120).height>=fallPose({...event.fall,tick:100,power:0},120).height);
 fx.reset();assert.equal(fx.options({...p,st:'run'},info,110,'play').fall,null);
+const reused=fx.options(p,info,110,'play');assert.equal(fx.options(p,info,111,'play'),reused,'opciones reutilizadas por jugador');
+assert.equal(reused.fall.tick,110,'fallback down no reinicia su fase cada 30 ticks');
 console.log('toon-fx OK: seis variantes deterministas, duración y replay');

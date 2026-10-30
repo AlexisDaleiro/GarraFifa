@@ -1,6 +1,6 @@
 'use strict';
 const assert=require('node:assert/strict');
-const {selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CLIPS,CONFIG,CROSSFADE,CADENCE}=require('../public/player3d');
+const {selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CLIPS,CONFIG,CROSSFADE,CADENCE,fadeDuration}=require('../public/player3d');
 assert.equal(CROSSFADE,.15);
 for(const [p,a,o,expected] of [
  [{st:'run',flags:0},{speed:0},{},'idle'],
@@ -50,12 +50,22 @@ const actor={actions:Object.fromEntries(CLIPS.map(name=>[name,new Action(clips[n
 updateAction(actor,{st:'run',flags:0},{speed:2.5},{},1/60);
 assert.equal(actor.current,'jog');assert.equal(actor.action.rate,CADENCE);
 updateAction(actor,{st:'run',flags:2},{speed:3.45},{},1/60);
-assert.equal(actor.current,'sprint');assert.equal(actor.action.rate,CADENCE);assert.equal(actor.action.fade.time,.15);
-updateAction(actor,{st:'run',flags:2},{speed:1.725},{},1/60);assert.equal(actor.action.rate,CADENCE*.5);
+assert.equal(actor.current,'jog','permanencia mínima evita alternar por un frame');
+for(let i=0;i<30;i++)updateAction(actor,{st:'run',flags:2},{speed:3.45},{},1/60);
+assert.equal(actor.current,'sprint');assert(Math.abs(actor.action.rate-CADENCE)<.01);assert.equal(actor.action.fade.time,fadeDuration('jog','sprint'));
+updateAction(actor,{st:'run',flags:2},{speed:1.725},{},1/60);assert(actor.action.rate>CADENCE*.5&&actor.action.rate<CADENCE,'cadencia filtrada');
+for(let i=0;i<60;i++)updateAction(actor,{st:'run',flags:2},{speed:1.725},{},1/60);assert(Math.abs(actor.action.rate-CADENCE*.5)<.001);
 updateAction(actor,{st:'run',flags:4},{speed:0},{},1/60);
 const kick=actor.action;
 updateAction(actor,{st:'run',flags:0},{speed:2.5},{},1/60);assert.equal(actor.action,kick,'no cortar el golpe al caer el flag');
 kick.running=false;updateAction(actor,{st:'run',flags:0},{speed:2.5},{},1/60);assert.equal(actor.current,'jog');
+assert.equal(actor.action.fade.time,.2,'fundido al salir de un clip de una vez');
+const jitterActor={actions:Object.fromEntries(CLIPS.map(name=>[name,new Action(clips[name])])),mixer:{update(){}},referenceSpeed:CONFIG.referenceSpeed};
+for(let i=0;i<120;i++)updateAction(jitterActor,{st:'run',flags:0},{speed:i%2?.13:.10},{},1/60);
+assert.equal(jitterActor.current,'idle');assert.equal(jitterActor.action.resets,1,'sin parpadeo cerca del umbral');
+for(let i=0;i<30;i++)updateAction(jitterActor,{st:'run',flags:0},{speed:2.5},{},1/60);
+assert.equal(jitterActor.current,'jog');
+assert(fadeDuration('jog','kick')<fadeDuration('idle','jog'));
 // Atlas: un renderer y 22 mixers; geometría/texturas compartidas, materiales y esqueletos independientes.
 class V {constructor(x=0,y=0,z=0){Object.assign(this,{x,y,z});} set(x,y,z){Object.assign(this,{x,y,z});return this;}setScalar(v){return this.set(v,v,v);}}
 class Node {
@@ -87,6 +97,12 @@ assert.equal(a1.object.children[1].material.map,a2.object.children[1].material.m
 assert.equal(gk.materials[0].material.color.value,'#22c55e');
 assert.equal(a1.materials[0].material.color.value,kit.c1);
 assert(a1.mixer.updates===3&&a2.mixer.updates===2,'actualizar cada mixer una sola vez por cuadro');
+for(let id=1;id<=22;id++)backend.prepare({id,x:id,y:0,st:'run',flags:0,face:Math.PI},{id},kit,{speed:2.5},{time:100});
+backend.renderFrame(100);const rendered=renderCount;
+for(let id=1;id<=22;id++)backend.draw(g,{id},{id},kit,{}, {time:100});
+assert.equal(renderCount,rendered,'el dibujo no vuelve a renderizar el atlas preparado');
+assert.equal(backend.actors.get(22).state.p.x,22,'el último jugador usa datos del cuadro actual');
+assert(backend.stats().maxRotationStep<=.45+.00001,'velocidad angular acotada');
 const rootClip={clone(){return {tracks:[{name:'Scene.position',values:[1,2,3,4,5,6]},{name:'Hips.quaternion',values:[0,0,0,1]}]};}};
 assert.deepEqual(inPlace(THREE,rootClip,asset).tracks[0].values,[1,2,3,1,5,3]);
 assert.doesNotThrow(()=>validate(THREE,asset,clips));
@@ -94,7 +110,11 @@ assert.throws(()=>validate(THREE,asset,{...clips,jog:null}),/jog/);
 assert.throws(()=>validate(THREE,new Node('NoRig'),clips),/riggeado/);
 assert.throws(()=>validate(THREE,asset,{...clips,jog:{duration:1,tracks:[{name:'Absent.quaternion'}]}}),/ausente/);
 backend.dispose();assert.equal(backend.stats().players,0);assert(disposedMaterials>=22);
-console.log('player3d OK: clips, crossfade 0.15s, velocidad, tintes, root motion, 22 mixers / 1 renderer / 1 pasada por cuadro');
+let crop=null;
+const small=createBackend(THREE,clone,asset,clips,{...CONFIG,resolution:2},()=>({domElement:{},setPixelRatio(){},setSize(){},setClearColor(){},render(){},dispose(){}}));
+small.draw({drawImage(...args){crop=args;}},{id:1,st:'run',flags:0,face:0},{id:1},kit,{speed:0},{time:0});
+assert.equal(small.stats().atlasResolution,2);assert.equal(crop[3],144);assert.equal(crop[4],160,'recorte consistente al reducir resolución');small.dispose();
+console.log('player3d OK: histéresis, fundidos, cadencia filtrada, giro limitado, tintes y 22 mixers / 1 pasada');
 
 // Assets reales incluidos: impedir que un build pase con rutas que devuelven 404.
 const fs=require('node:fs'),path=require('node:path');

@@ -41,5 +41,11 @@
       lean:moving * mix(mix(0.025,0.13,jog),0.3,sprint),
       armSwing:mix(mix(0.28,0.65,jog),0.95,sprint), elbow:mix(mix(0.35,1.35,jog),1.55,sprint) };
   }
-  root.FootballMotion = { leg, body };
+  function smoothWeights(out,moving,jog,sprint,dt){
+    const k=1-Math.exp(-Math.max(0,Math.min(dt,.05))/.065);
+    out.moving=(out.moving||0)+(clamp(moving,0,1)-(out.moving||0))*k;
+    out.run=(out.run||0)+(clamp(jog,0,1)-(out.run||0))*k;
+    out.sprint=(out.sprint||0)+(clamp(sprint,0,1)-(out.sprint||0))*k;return out;
+  }
+  root.FootballMotion = { leg, body, smoothWeights };
 })(typeof module !== 'undefined' ? module.exports : window);

@@ -28,7 +28,8 @@ body {
 }
 
 .screen { display: none; min-height: 100vh; }
-.screen.active { display: flex; }
+.screen.active { display: flex; animation: screen-in .18s ease-out; }
+@keyframes screen-in { from { opacity: 0; } to { opacity: 1; } }
 
 /* ---------- Menú ---------- */
 #menu { flex-direction: column; align-items: center; padding: 32px 16px; gap: 18px; }
@@ -210,7 +211,7 @@ kbd {
 .fill { height: 100%; width: 0%; }
 .fill.stam { background: linear-gradient(90deg, #e63946, #ffd23f 40%, #3ddc84); width: 100%; transition: width 0.1s linear; }
 .fill.stam.tired { background: #e63946; animation: blink 0.5s steps(2) infinite; }
-.fill.pow { background: linear-gradient(90deg, #3ddc84 0%, #3ddc84 34%, #ffd23f 34%, #ffd23f 75%, #ff7b00 75%, #e63946 92%, #ff00aa 100%); background-size: 200px 100%; }
+.fill.pow { transition: width .09s linear; background: linear-gradient(90deg, #3ddc84 0%, #3ddc84 34%, #ffd23f 34%, #ffd23f 75%, #ff7b00 75%, #e63946 92%, #ff00aa 100%); background-size: 200px 100%; }
 .mark { position: absolute; top: 0; bottom: 0; width: 2px; background: #000; }
 .mark.m1 { left: 34%; }
 .mark.m2 { left: 75%; }
@@ -264,10 +265,11 @@ kbd {
   background: var(--red);
   padding: 4px 12px;
   border-radius: 4px;
-  display: none;
-  animation: blink 1s steps(2) infinite;
+  display: block;
+  animation: replay-pulse 1s ease-in-out infinite alternate;
 }
-.replay-tag.show { display: block; }
+.replay-tag.show { pointer-events: none; }
+@keyframes replay-pulse { from { filter: brightness(.85); } to { filter: brightness(1.15); } }
 
 .help {
   position: absolute;
@@ -275,9 +277,9 @@ kbd {
   left: 14px;
   max-width: 420px;
   font-size: 13px;
-  display: none;
+  display: block;
 }
-.help.show { display: block; }
+.help.show { pointer-events: auto; }
 .help p { margin: 6px 0 0; }
 
 .end {
@@ -286,16 +288,20 @@ kbd {
   left: 50%;
   transform: translate(-50%, -50%);
   text-align: center;
-  display: none;
+  display: block;
   min-width: min(420px, calc(100vw - 32px));
 }
-.end.show { display: block; }
+.end.show { pointer-events: auto; }
 .end h2 { font: 400 28px var(--font-title); margin: 0 0 8px; color: var(--accent); }
 .end-score { font: 400 56px var(--font-title); margin: 0; }
 .end-actions { display: flex; gap: 10px; justify-content: center; margin-top: 12px; flex-wrap: wrap; }
 
+.replay-tag,.help,.end { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .18s ease, visibility 0s .18s; }
+.replay-tag.show,.help.show,.end.show { opacity: 1; visibility: visible; transition-delay: 0s; }
 /* ---------- Táctil ---------- */
-.only-touch, .touch { display: none; }
+.only-touch { display: none; }
+.touch { display: block; position: absolute; inset: 0; pointer-events: none; opacity: 0; visibility: hidden; transition: opacity .18s, visibility 0s .18s; }
+.touch > * { pointer-events: none; }
 .hint { margin: 0 0 6px; color: var(--muted); font-size: 13px; }
 .tk { display: inline-block; font: 400 11px var(--font-title); background: var(--accent); color: var(--accent-ink); border-radius: 4px; padding: 1px 6px; }
 
@@ -303,7 +309,7 @@ kbd {
   .only-touch { display: block; }
   .only-keys { display: none; }
   #game { touch-action: none; user-select: none; -webkit-user-select: none; }
-  .touch { display: block; position: absolute; inset: 0; pointer-events: none; }
+  .touch { opacity: 1; visibility: visible; transition-delay: 0s; }
   .touch > * { pointer-events: auto; }
   .stick {
     position: absolute;

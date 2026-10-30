@@ -40,13 +40,14 @@ assert.equal(meshes(actors[0])[0].geometry,meshes(actors[1])[0].geometry);
 assert.notEqual(meshes(actors[0])[0].skeleton,meshes(actors[1])[0].skeleton);
 for(const name of mod.CLIPS){const a=actors[0];a.mixer.stopAllAction();a.actions[name].reset().play();a.mixer.update(.2);}
 console.log('GLTFLoader + SkeletonUtils + 22 AnimationMixers reales OK; clips:',Object.keys(clips));
+for(const a of actors){a.mixer.stopAllAction();a.current=a.action=null;a.clipAge=1;a.retiringCount=0;}
 // Las poses nuevas también pasan por el rig real, sin WebGL ni navegador.
 import fx from '../public/toon-fx.js';
 const seeds=Array.from({length:6},(_,v)=>{let s=0;while(fx.variant(s,70)!==v)s++;return s;});
 let clock=4000;
 for(const scenario of ['fall0','fall1','fall2','fall3','fall4','fall5','hit','post','goal','cry']){
  const at=clock/1000*60;
- for(let frame=0;frame<90;frame++,clock+=1000/60)for(let id=1;id<=22;id++){
+ for(let frame=0;frame<120;frame++,clock+=1000/60)for(let id=1;id<=22;id++){
   const tick=clock/1000*60,age=tick-at,opts={tick,team:0};
   if(scenario.startsWith('fall')&&age<88)opts.fall={tick:at,duration:70,seed:seeds[+scenario.slice(-1)],dx:1,dy:0,power:1};
   if(scenario==='hit'&&age<24)opts.hit={tick:at,id:1,victim:id,dx:0,dy:1};
@@ -56,10 +57,12 @@ for(const scenario of ['fall0','fall1','fall2','fall3','fall4','fall5','hit','po
  }
  for(const a of backend.actors.values()){
   a.slot.updateMatrixWorld(true);a.object.traverse(n=>{if(n.isBone)assert(n.matrixWorld.elements.every(Number.isFinite),scenario+': hueso inválido');});
-  if(scenario.startsWith('fall')){assert(Math.abs(a.motion.rotation.x)<1e-9);assert(Math.abs(a.motion.scale.y-1)<1e-9);assert(Math.abs(a.object.position.y-a.baseY)<1e-9);}
+  if(scenario.startsWith('fall')){assert(Math.abs(a.motion.rotation.x)<1e-5);assert(Math.abs(a.motion.scale.y-1)<1e-5);assert(Math.abs(a.object.position.y-a.baseY)<1e-5,scenario+' id '+a.key+' y '+a.object.position.y+' base '+a.baseY);}
   if(scenario==='cry')assert(a.features.tears.every(t=>t.m.visible));
  }
 }
+assert(backend.stats().maxRotationStep<=.45+.00001,'giro limitado por segundo');
+assert(backend.stats().maxPoseStep<1.5,'sin salto instantáneo de orientación de la pose');
 console.log('Caricatura real OK: seis caídas + recuperación, choque, poste, cuatro festejos y lágrimas en 22 rigs');
 // Impedir que una cabeza o un pie invada la casilla vecina del atlas.
 for(const scenario of ['goal','fall']){

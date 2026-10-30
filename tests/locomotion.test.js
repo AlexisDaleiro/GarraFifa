@@ -26,3 +26,7 @@ for(const phase of [0,1,2,3]) {
  assert(Math.abs(p.footF)<1e-8 && Math.abs(p.footH)<1e-8);
 }
 console.log(`locomoción OK: ${count} poses, apoyos, vuelo, continuidad y reposo`);
+
+const weights={moving:0,run:0,sprint:0};
+for(let i=0;i<60;i++){const before=weights.sprint;motion.smoothWeights(weights,1,1,1,1/60);assert(weights.sprint>=before&&weights.sprint-before<.23);}
+assert(weights.sprint>.999);motion.smoothWeights(weights,0,0,0,100);assert(weights.sprint>.4,"frame largo acotado");
