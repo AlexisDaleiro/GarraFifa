@@ -224,7 +224,7 @@
   function createBackend(THREE,clone,asset,clips,config=CONFIG,rendererFactory) {
     const actors=new Map(),scene=new THREE.Scene();
     const {columns,rows,tileW,tileH,base}=ATLAS,resolution=config.resolution||(typeof window!=='undefined'&&window.innerWidth<600?2:3);
-    const renderer=rendererFactory?rendererFactory():new THREE.WebGLRenderer({alpha:true,antialias:true,preserveDrawingBuffer:true});
+    const renderer=rendererFactory?rendererFactory():new THREE.WebGLRenderer({alpha:true,antialias:true,preserveDrawingBuffer:false});
     renderer.setPixelRatio(1);renderer.setSize(columns*tileW*resolution,rows*tileH*resolution,false);
     renderer.setClearColor(0,0);renderer.outputColorSpace=THREE.SRGBColorSpace;
     const camera=new THREE.OrthographicCamera(0,columns*tileW,rows*tileH,0,0.1,1000);

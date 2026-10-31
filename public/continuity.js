@@ -42,7 +42,7 @@
         // Si faltan snapshots el reloj frena suave antes del último recibido: los jugadores aminoran en vez de
         // extrapolar, quedarse quietos y saltar cuando llega la ráfaga.
         let rate=1+clamp((target-c.cursor)*.05,-.08,.08);const ahead=c.lastTick-c.cursor;
-        if(ahead<2){rate*=clamp((ahead+1)/3);c.stats.holds++;}
+        if(ahead<1){rate*=clamp((ahead+1)/2);c.stats.holds++;}
         c.cursor=Math.min(c.cursor+Math.max(0,gap)/TICK*rate,Math.max(c.cursor,c.lastTick+1));
       }
       c.stats.minDepth=Math.min(c.stats.minDepth,c.lastTick-c.cursor);
@@ -52,6 +52,41 @@
     return c;
   }
   const row=(s,id)=>{if(!s)return null;for(let i=0;i<s.p.length;i++)if(s.p[i][0]===id)return s.p[i];return null;};
+  // Marcha 'run' de updatePlayer (server.js) para un humano de campo, sin choques ni pelota.
+  // P: constantes PACE que manda el servidor. El --selftest del servidor compara las dos trayectorias.
+  function stepRun(s,bits,P){
+    let x=(bits&8?1:0)-(bits&4?1:0),y=(bits&2?1:0)-(bits&1?1:0);const l=Math.hypot(x,y);if(l){x/=l;y/=l;}
+    let speed=P.run;
+    if((bits&16)&&l&&!s.tired){speed=P.sprint;s.stamina-=.32;if(s.stamina<=0){s.stamina=0;s.tired=true;}}
+    else s.stamina=Math.min(100,s.stamina+(l?.1:.22));
+    if(s.tired){speed=P.tired;if(s.stamina>35)s.tired=false;}
+    if(s.ball)speed*=P.carry;if(s.boost)speed*=P.boost;if(s.charging)speed*=P.charge;
+    if(l&&s.vx*x+s.vy*y<0&&Math.hypot(s.vx,s.vy)>P.reverseStop){s.vx*=P.reverseBrake;s.vy*=P.reverseBrake;}
+    else{const acc=s.ball?P.ballAcc:P.acc;s.vx+=(x*speed-s.vx)*acc;s.vy+=(y*speed-s.vy)*acc;}
+    if(l){const r=s.ball?P.ballTurn:P.turn,f=s.face+clamp(angle(s.face,Math.atan2(y,x)),-r,r);s.face=Math.atan2(Math.sin(f),Math.cos(f));}
+    s.x=clamp(s.x+s.vx,-30,s.w+30);s.y=clamp(s.y+s.vy,-30,s.h+30);
+    if(s.wall){if(s.x<9||s.x>s.w-9){s.x=clamp(s.x,9,s.w-9);s.vx=0;}if(s.y<9||s.y>s.h-9){s.y=clamp(s.y,9,s.h-9);s.vy=0;}}
+    return s;
+  }
+  // Predicción del jugador propio: sin ella el stick tarda RTT + buffer (~200-400 ms en celular) en verse.
+  // Cada frame se rehace desde el último snapshot con los inputs locales que el servidor todavía no aplicó,
+  // así el servidor sigue mandando y cualquier error (choque, empujón) se corrige solo en el frame siguiente.
+  function createPredictor(){
+    const hist=[0,0],s={};
+    return {
+      input(bits,now){hist.push(now,bits);if(hist.length>400)hist.splice(0,hist.length-400);},
+      reset(){hist.length=0;hist.push(0,0);},
+      // from: hora local en que el servidor aplicó los inputs del snapshot `last`.
+      predict(last,prev,id,from,now,P,w,h,wall){
+        const a=row(last,id),b=row(prev,id);if(!a||!b||a[4]!==0)return null;
+        const d=Math.max(1,last.t-prev.t),n=Math.min(30,Math.round((now-from)/TICK));
+        Object.assign(s,{x:a[1],y:a[2],vx:(a[1]-b[1])/d,vy:(a[2]-b[2])/d,face:a[3],stamina:a[5],tired:!!(a[7]&1),boost:!!(a[7]&8),ball:last.o===id,charging:last.o===id&&a[6]>0,w,h,wall});
+        let i=hist.length-2;while(i>0&&hist[i]>from)i-=2;
+        for(let k=1;k<=n;k++){const t=from+k*TICK;while(i+2<hist.length&&hist[i+2]<=t)i+=2;stepRun(s,hist[i+1],P);}
+        return s;
+      }
+    };
+  }
   function height(z0,z1,k,d){
     if(d<=0)return z1;
     const v=(z1-z0)/d,g=z0>0||z1>0?.32:0,k2=k*k,k3=k2*k;
@@ -176,6 +211,6 @@
       if(seen.has(key))return false;seen.add(key);order.push(key);if(order.length>limit)seen.delete(order.shift());return true;
     },reset(){seen.clear();order.length=0;}};
   }
-  const api={TICK,clamp,alpha,ease,angle,turn,rotationAlpha,height,createClock,createSampler,createPresenter,createCamera,createBlend,envelope,createPool,stepParticle,stepConfetti,createTrail,createEventGate};
+  const api={TICK,clamp,alpha,ease,angle,turn,rotationAlpha,height,createClock,stepRun,createPredictor,createSampler,createPresenter,createCamera,createBlend,envelope,createPool,stepParticle,stepConfetti,createTrail,createEventGate};
   root.FootballContinuity=api;if(typeof module!=='undefined')module.exports=api;
 })(typeof window==='undefined'?globalThis:window);

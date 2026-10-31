@@ -10,8 +10,8 @@
   const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, PASS: 128, SHOOT: 1024 };
   const toon = ToonFX.create(),C=FootballContinuity;
   const netClock=C.createClock(),liveSampler=C.createSampler(),replaySampler=C.createSampler(),presentation=C.createPresenter();
-  const eventGate=C.createEventGate();let networkEpoch=0;
-  function resetNetwork(){networkEpoch++;eventGate.reset();snaps.length=0;netClock.reset();liveSampler.reset();replaySampler.reset();presentation.reset();painted=false;sceneBlend.left=sceneBlend.weight=0;ballTrail.clear();lastBallPos=null;clearEffects(particles,particlePool);clearEffects(floaters,floaterPool);clearEffects(rings,ringPool);clearEffects(confetti,confettiPool);anim.clear();}
+  const eventGate=C.createEventGate(),predictor=C.createPredictor();let networkEpoch=0;
+  function resetNetwork(){networkEpoch++;predictor.reset();eventGate.reset();snaps.length=0;netClock.reset();liveSampler.reset();replaySampler.reset();presentation.reset();painted=false;sceneBlend.left=sceneBlend.weight=0;ballTrail.clear();lastBallPos=null;clearEffects(particles,particlePool);clearEffects(floaters,floaterPool);clearEffects(rings,ringPool);clearEffects(confetti,confettiPool);anim.clear();}
 
   const ST_NAMES = ['run', 'slide', 'recover', 'down', 'spin', 'croq', 'step', 'fake', 'rainbow', 'fooled', 'hold', 'dive'];
   const DASH_SHORT=[3,3],DASH_LONG=[5,4],DASH_NONE=[];
@@ -151,8 +151,8 @@
   // ---------- Red ----------
   // WebSocket primero: el long-polling entrega en ráfagas y el partido se ve a los tirones.
   const socket = io({ transports: ['websocket', 'polling'], tryAllTransports: true });
-  let rtt = 0;
-  setInterval(() => { if (!socket.connected || !inGame()) return; const t0 = performance.now(); socket.emit('lat', () => { rtt = performance.now() - t0; if (menuOpen) renderPause(); }); }, 2000);
+  let rtt = 0, rttEst = 0; // rttEst suavizado: lo usa la predicción del jugador propio
+  setInterval(() => { if (!socket.connected || !inGame()) return; const t0 = performance.now(); socket.emit('lat', () => { rtt = performance.now() - t0; rttEst = rttEst ? rttEst + (rtt - rttEst) * 0.3 : rtt; if (menuOpen) renderPause(); }); }, 1000);
   let roomInfo = null, roster = new Map(), myPid = 0, snaps = [], lastState = '';
   let endTimer = 0;
 
@@ -245,11 +245,27 @@
     held.push({s,epoch:networkEpoch,due:Math.max(now+wait,held.length?held[held.length-1].due:0)});
     if(held.length===1)setTimeout(drain,wait);
   });
-  const netDiag=netParams.has('netdiag')?{frames:0,playJumps:0,setJumps:0,resumeJumps:0,maxPlayStep:0}:null;
+  // Jugador propio adelantado a "ahora" con sus inputs (continuity.createPredictor); el resto sigue interpolado.
+  // lead = predicción - interpolación; su peso sube y baja en 150 ms al entrar o salir de la marcha normal
+  // (barrida, caída, saque), así no hay salto. ?predict=0 la apaga para comparar.
+  const predictOn=netParams.get('predict')!=='0';let leadX=0,leadY=0,leadW=0;
+  function predictMe(view,now,dt){
+    const last=snaps[snaps.length-1],prev=snaps[snaps.length-2],info=roster.get(myPid),me=myPid&&row(view,myPid);
+    if(!me)return;
+    const p=prev&&info&&info.kind==='field'&&roomInfo&&roomInfo.pace&&last.s==='play'&&view.state==='play'&&!(last.rp===myPid&&!(bits&DIRS))
+      ?predictor.predict(last,prev,myPid,(last.t+netClock.offset)*TICK_MS-rttEst,now,roomInfo.pace,W,H,!!pitch.wall):null;
+    if(p){leadX=p.x-me.x;leadY=p.y-me.y;leadW=Math.min(1,leadW+dt/.15);me.face=p.face;me.speed=Math.min(7.5,Math.hypot(p.vx,p.vy));}
+    else leadW=Math.max(0,leadW-dt/.15);
+    const w=C.ease(leadW),dx=leadX*w,dy=leadY*w;me.x+=dx;me.y+=dy;
+    if(view.owner===myPid){view.ball.x+=dx;view.ball.y+=dy;}
+    if(netDiag&&p){netDiag.predFrames++;netDiag.maxLead=Math.max(netDiag.maxLead,Math.hypot(leadX,leadY));}
+  }
+  const row=(view,id)=>{for(const p of view.players)if(p.id===id)return p;return null;};
+  const netDiag=netParams.has('netdiag')?{frames:0,playJumps:0,setJumps:0,resumeJumps:0,maxPlayStep:0,predFrames:0,maxLead:0}:null;
   if(netDiag)setInterval(()=>{
     if(!inGame())return;const c=netClock.takeStats();
-    console.info('[netdiag]',JSON.stringify({...netDiag,maxPlayStep:+netDiag.maxPlayStep.toFixed(1),packets:c.packets,stale:c.stale,maxArrivalMs:Math.round(c.maxArrival),maxTickGap:c.maxTickGap,bufferMs:Math.round(netClock.delay*TICK_MS),minDepthTicks:+c.minDepth.toFixed(1),holdFrames:c.holds,resumes:c.resumes,transport:socket.io.engine&&socket.io.engine.transport.name}));
-    Object.assign(netDiag,{frames:0,playJumps:0,setJumps:0,resumeJumps:0,maxPlayStep:0});
+    console.info('[netdiag]',JSON.stringify({...netDiag,maxPlayStep:+netDiag.maxPlayStep.toFixed(1),maxLead:+netDiag.maxLead.toFixed(1),rttMs:Math.round(rttEst),packets:c.packets,stale:c.stale,maxArrivalMs:Math.round(c.maxArrival),maxTickGap:c.maxTickGap,bufferMs:Math.round(netClock.delay*TICK_MS),minDepthTicks:+c.minDepth.toFixed(1),holdFrames:c.holds,resumes:c.resumes,transport:socket.io.engine&&socket.io.engine.transport.name}));
+    Object.assign(netDiag,{frames:0,playJumps:0,setJumps:0,resumeJumps:0,maxPlayStep:0,predFrames:0,maxLead:0});
   },5000);
 
   // ---------- Menú y lobby ----------
@@ -399,13 +415,14 @@
 
   // ---------- Entrada ----------
   let bits = 0;
+  function sendInput() { socket.emit('input', bits); predictor.input(bits, performance.now()); }
   function setBit(bit, on) {
     const nb = on ? bits | bit : bits & ~bit;
     if (nb === bits) return;
     bits = nb;
-    socket.emit('input', bits);
+    sendInput();
   }
-  function releaseAll() { if (bits) { bits = 0; socket.emit('input', 0); } }
+  function releaseAll() { if (bits) { bits = 0; sendInput(); } }
 
   // ---------- Menú de pausa ----------
   // Online el partido no se frena para uno solo: abrir el menú suelta los controles.
@@ -471,7 +488,7 @@
   const DIRS = B.UP | B.DOWN | B.LEFT | B.RIGHT;
   function setDir(mask) {
     const nb = (bits & ~DIRS) | mask;
-    if (nb !== bits) { bits = nb; socket.emit('input', bits); }
+    if (nb !== bits) { bits = nb; sendInput(); }
   }
   document.querySelectorAll('.tbtns button').forEach(btn => {
     const bit = B[btn.dataset.b];
@@ -487,20 +504,25 @@
   });
   const passBtn = document.querySelector('.tbtns [data-b="PASS"]');
   const stick = $('stick'), knob = stick.firstElementChild;
-  let stickId = null;
+  // 8 sectores de 45° (el protocolo manda 4 bits de dirección). Antes cada eje pedía el 40% del radio:
+  // había que empujar mucho para arrancar y una diagonal pedía ~57%. Ahora zona muerta radial chica y
+  // margen entre sectores para que el pulgar en el borde no haga titilar la dirección.
+  const SECTORS = [B.RIGHT, B.RIGHT | B.DOWN, B.DOWN, B.DOWN | B.LEFT, B.LEFT, B.LEFT | B.UP, B.UP, B.UP | B.RIGHT];
+  let stickId = null, stickRect = null, sector = -1;
   function moveStick(e) {
-    const r = stick.getBoundingClientRect(), R = r.width / 2;
+    const r = stickRect, R = r.width / 2; // medido al tocar: leerlo en cada pointermove fuerza layout
     let dx = e.clientX - (r.left + R), dy = e.clientY - (r.top + R);
     const d = Math.hypot(dx, dy);
     if (d > R) { dx *= R / d; dy *= R / d; }
     knob.style.transform = `translate(${dx}px, ${dy}px)`;
-    // 8 direcciones: un eje cuenta si supera el 40% del radio
-    const t = R * 0.4;
-    setDir((dy < -t ? B.UP : 0) | (dy > t ? B.DOWN : 0) | (dx < -t ? B.LEFT : 0) | (dx > t ? B.RIGHT : 0));
+    if (d < R * (sector < 0 ? 0.22 : 0.15)) { sector = -1; return setDir(0); }
+    const a = Math.atan2(dy, dx);
+    if (sector < 0 || Math.abs(C.angle(sector * Math.PI / 4, a)) > Math.PI / 8 + 0.15) sector = (Math.round(a / (Math.PI / 4)) + 8) % 8;
+    setDir(SECTORS[sector]);
   }
   stick.addEventListener('pointerdown', e => {
     e.preventDefault(); audio.init();
-    stickId = e.pointerId; moveStick(e); stick.setPointerCapture(stickId);
+    stickId = e.pointerId; stickRect = stick.getBoundingClientRect(); sector = -1; moveStick(e); stick.setPointerCapture(stickId);
   });
   stick.addEventListener('pointermove', e => { if (e.pointerId === stickId) moveStick(e); });
   const stickUp = e => {
@@ -1133,7 +1155,7 @@
       if (replay.t >= replay.end) stopReplay();
       else view = sample(replay.buf, replay.t);
     }
-    if (!view) view = sample(snaps, liveTick);
+    if (!view) { view = sample(snaps, liveTick); if (view && predictOn) predictMe(view, now, dt / 60); }
     if(view){
       const shown=presentation.update(view,dt/60);if(shown.discontinuity)transitionScene();
       // Saltos legítimos (saque, gol, vuelta de segundo plano) aparte de los que ocurren en juego continuo.

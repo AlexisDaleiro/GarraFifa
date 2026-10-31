@@ -91,6 +91,42 @@ const pauses=(seed,every)=>{const r=rnd(seed),list=[];for(let t=2000;t<40000;t+=
  assert(simulate({lat:70,jit:expo(30),frame:()=>55}).delay<300,'retraso de presentación acotado a 18 fps');
  // Reconexión: reset y nuevo origen de ticks arrancan limpio.
  const c=C.createClock();c.receive(5000,1000);c.advance(1000);c.reset();assert(c.receive(10,2000));assert(c.advance(2000)<=10);}
+// Predicción del jugador propio: servidor simulado con la misma marcha (stepRun), inputs que suben con demora,
+// snapshots redondeados como snapshot() que bajan con demora. Se compara contra donde el servidor tendrá al
+// jugador cuando llegue el input enviado ahora; sin predicción esa distancia es el lag que se siente.
+{const P={run:2.125,sprint:2.76,tired:1.615,carry:.9,boost:1.35,charge:.6,acc:.12,ballAcc:.09,turn:.3,ballTurn:.12,reverseBrake:.78,reverseStop:.2};
+ const r1=v=>Math.round(v*10)/10;
+ function play({up=40,down=40,jit=()=>0,jitUp=()=>0,stall=()=>null,frame=()=>1000/60,dur=20000}){
+  const r=rnd(3),fr=rnd(5),plan=t=>[8|16,4,1|8,2|4|16,0][Math.floor(t/700)%5];
+  const sv={x:150,y:200,vx:0,vy:0,face:0,stamina:100,tired:false,boost:false,ball:false,charging:false,w:640,h:400,wall:true};
+  const truth=[],snaps=[],inputs=[];let sent=-1,lastAt=0;
+  for(let t=0;t<dur+2000;t+=1000/60){const b=plan(t);if(b!==sent){sent=b;inputs.push({at:t+up+jitUp(r),b,t});}}
+  let ii=0,bits=0;
+  for(let k=0;k*C.TICK<dur+1000;k++){
+   while(ii<inputs.length&&inputs[ii].at<=k*C.TICK)bits=inputs[ii++].b;
+   C.stepRun(sv,bits,P);truth[k]={x:sv.x,y:sv.y};
+   if(k%2===0){const at=Math.max(k*C.TICK+down+jit(r),stall(k*C.TICK)??0,lastAt);lastAt=at;snaps.push({at,s:{t:k,s:'play',o:0,p:[[1,r1(sv.x),r1(sv.y),Math.round(sv.face*100)/100,0,Math.round(sv.stamina),0,sv.tired?1:0]],b:[0,0,0]}});}
+  }
+  const clock=C.createClock(),pred=C.createPredictor(),buf=[],samp=C.createSampler();
+  let now=0,si=0,pi=0,err=0,mean=0,lag=0,n=0,last=null,jumps=0;
+  while(now<dur){
+   const dt=frame(fr);now+=dt;
+   while(pi<inputs.length&&inputs[pi].t<=now)pred.input(inputs[pi].b,inputs[pi++].t);
+   while(si<snaps.length&&snaps[si].at<=now){const d=snaps[si++];if(clock.receive(d.s.t,d.at))buf.push(d.s);}
+   const t=clock.advance(now);if(t===null||buf.length<2||now<3000)continue;
+   const p=pred.predict(buf[buf.length-1],buf[buf.length-2],1,(buf[buf.length-1].t+clock.offset)*C.TICK-(up+down),now,P,640,400,true);
+   const want=truth[Math.round((now+up)/C.TICK)],old=samp.sample(buf,t).players[0];
+   const e=Math.hypot(p.x-want.x,p.y-want.y);err=Math.max(err,e);mean+=e;lag+=Math.hypot(old.x-want.x,old.y-want.y);n++;
+   if(last&&Math.hypot(p.x-last.x,p.y-last.y)>2.8*dt/C.TICK*1.6+1.5)jumps++;last={x:p.x,y:p.y};
+  }
+  return {err,mean:mean/n,lag:lag/n,jumps};
+ }
+ for(const [name,opts,limit] of [['40+40 ms',{},3],['80+80 ms con jitter de bajada',{up:80,down:80,jit:expo(25)},6],['celular 18 fps y pausas',{up:70,down:70,frame:()=>55,stall:pauses(9,3000)},8],['jitter de subida (inevitable: el servidor aplica tarde)',{up:80,down:80,jitUp:expo(25)},20]]){
+  const r=play(opts);
+  assert(r.err<limit,`predicción ${name}: error ${r.err.toFixed(2)}`);
+  assert(r.lag>r.mean*4,`predicción ${name}: no mejora el lag (${r.lag.toFixed(1)} vs ${r.mean.toFixed(1)})`);
+  if(!opts.stall&&!opts.jitUp)assert.equal(r.jumps,0,`predicción ${name}: ${r.jumps} saltos`);
+ }}
 const camera=C.createCamera(),person={x:850,y:500};let cx=camera.x,cy=camera.y;
 for(let i=0;i<240;i++){
  const c=camera.update(i<120?900:30,200,i<80?person:null,i>160,i<100?500:1200,i<100?460:300,1/60);

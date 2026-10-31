@@ -180,9 +180,12 @@ function fallFX(room, s, o, duration) {
     dx:r1(dx/d),dy:r1(dy/d),power:r1(Math.min(1,Math.hypot(s.vx,s.vy)/PACE.slide))};
 }
 
+// Constantes de marcha que el cliente usa para predecir su propio jugador (continuity.stepRun).
+const MOVE = (({ run, sprint, tired, carry, boost, charge, acc, ballAcc, turn, ballTurn, reverseBrake, reverseStop }) =>
+  ({ run, sprint, tired, carry, boost, charge, acc, ballAcc, turn, ballTurn, reverseBrake, reverseStop }))(PACE);
 function roomInfo(r) {
   return {
-    code: r.code, host: r.host, mode: r.mode, minutes: r.minutes, pitch: r.pitch, paused: !!r.paused, state: r.state, score: r.score, teams: r.teams,
+    code: r.code, host: r.host, mode: r.mode, minutes: r.minutes, pitch: r.pitch, paused: !!r.paused, state: r.state, score: r.score, teams: r.teams, pace: MOVE,
     members: [...r.members].map(([id, { cid, ...m }]) => ({ id, ...m })),
   };
 }
@@ -1435,6 +1438,29 @@ function selfTest() {
       assert(Math.abs(p.vx - PACE.sprint) < 0.002, 'misma velocidad de sprint');
     }
     rooms.delete(r.code);
+  }
+  // 5f2) La predicción del cliente (continuity.stepRun) repite la marcha del servidor: sprint hasta cansarse,
+  // pared, frenada al invertir, diagonal y conducción con pelota.
+  {
+    const Cn = require('./public/continuity.js');
+    for (const withBall of [false, true]) {
+      const r = newRoom('t', 1, 3, 0);
+      r.state = 'play'; usePitch(r);
+      const p = makePlayer(r, 0, 'field', cleanProfile({}), 'a');
+      r.players = [p];
+      Object.assign(p, { x: W - 200, y: CY, vx: 0, vy: 0, face: 0 });
+      if (withBall) controlBall(r, p);
+      const s = { x: p.x, y: p.y, vx: 0, vy: 0, face: 0, stamina: p.stamina, tired: false, boost: false, ball: withBall, charging: false, w: W, h: H, wall: !!PITCHES[r.pitch].wall };
+      let tired = false;
+      for (const [bits, n] of [[B.RIGHT | B.SPRINT, 340], [B.LEFT, 40], [B.UP | B.LEFT | B.SPRINT, 30], [0, 15], [B.DOWN | B.RIGHT, 40]]) {
+        for (let i = 0; i < n; i++) {
+          p.input = bits; updatePlayer(r, p); Cn.stepRun(s, bits, MOVE); tired ||= p.tired;
+          assert(Math.hypot(p.x - s.x, p.y - s.y) < 1e-9 && Math.abs(normAng(p.face - s.face)) < 1e-9 && s.tired === p.tired, 'predicción igual al servidor');
+        }
+      }
+      assert(tired, 'la prueba llega a cansarse');
+      rooms.delete(r.code);
+    }
   }
   // 5g) Entradas frontales/laterales limpias, por atrás falta; ventana y castigo por errar.
   for (const angle of [0, Math.PI / 2, Math.PI]) {
