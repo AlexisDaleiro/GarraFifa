@@ -99,7 +99,7 @@ function newRoom(hostSid, mode, minutes, pitch = 0) {
   const room = {
     code: makeCode(), host: hostSid, mode, minutes, pitch, members: new Map(), state: 'lobby',
     players: [], ball: newBall(), score: [0, 0], timeLeft: 0, tick: 0, sp: null,
-    goalT: 0, kickTeam: 0, teams: [0, 1], events: [], nextId: 1, acc: 0,
+    goalT: 0, kickTeam: 0, teams: [0, 1], events: [], nextId: 1, acc: 0, swap: true,
   };
   rooms.set(room.code, room);
   return room;
@@ -141,6 +141,31 @@ function buildRoster(room) {
     gk.home = { x: team === 0 ? 16 : W - 16, y: CY };
     room.players.push(gk);
   }
+}
+
+// Único humano de su equipo (ej. 1v1 con equipos de 5): el control pasa al compañero CPU que recibe la pelota,
+// también en saques. El nombre viaja con el control; el dorsal queda en cada jugador.
+function autoSwitch(room) {
+  const o = room.ball.owner;
+  if (!o || o.sid || o.kind !== 'field') return;
+  let h = null;
+  for (const p of room.players) if (p.sid && p.team === o.team) { if (h) return; h = p; }
+  if (!h || h.kind !== 'field') return;
+  Object.assign(o, { sid: h.sid, name: h.name, input: h.input, pressed: 0, released: 0, aiDir: null, aiHold: 0 });
+  Object.assign(h, { sid: null, name: 'CPU', input: 0, pressed: 0, released: 0, aiDir: null, aiHold: 0 });
+  emitRoster(room);
+}
+
+// Cada jugador elige la selección de su equipo; el anfitrión, las dos. Pedir la del rival las intercambia.
+function chooseTeams(current, wanted, sides) {
+  const next = [...current];
+  for (const side of sides) {
+    const t = wanted[side];
+    if (!Number.isInteger(t) || t < 0 || t >= TEAMS.length || t === next[side]) continue;
+    if (t === next[1 - side]) next[1 - side] = next[side];
+    next[side] = t;
+  }
+  return next;
 }
 
 function setHome(p, f) {
@@ -185,7 +210,7 @@ const MOVE = (({ run, sprint, tired, carry, boost, charge, acc, ballAcc, turn, b
   ({ run, sprint, tired, carry, boost, charge, acc, ballAcc, turn, ballTurn, reverseBrake, reverseStop }))(PACE);
 function roomInfo(r) {
   return {
-    code: r.code, host: r.host, mode: r.mode, minutes: r.minutes, pitch: r.pitch, paused: !!r.paused, state: r.state, score: r.score, teams: r.teams, pace: MOVE,
+    code: r.code, host: r.host, mode: r.mode, minutes: r.minutes, pitch: r.pitch, paused: !!r.paused, state: r.state, score: r.score, teams: r.teams, swap: r.swap, pace: MOVE,
     members: [...r.members].map(([id, { cid, ...m }]) => ({ id, ...m })),
   };
 }
@@ -1004,6 +1029,7 @@ function step(room) {
     return;
   }
   room.timeLeft--;
+  if (room.swap) autoSwitch(room);
   for (const p of room.players) if (!p.sid) (p.kind === 'gk' ? gkAI : fieldAI)(room, p);
   gkHumanKick(room);
   for (const p of room.players) updatePlayer(room, p);
@@ -1129,12 +1155,15 @@ io.on('connection', socket => {
   });
 
   socket.on('settings', data => {
-    if (!room || room.host !== socket.id || room.state !== 'lobby' || !data) return;
-    if (MODES.includes(data.mode)) room.mode = data.mode;
-    if (Number.isInteger(data.pitch) && PITCHES[data.pitch]) room.pitch = data.pitch;
-    if ([3, 5].includes(data.minutes)) room.minutes = data.minutes;
-    const t = data.teams;
-    if (Array.isArray(t) && t.length === 2 && t.every(i => Number.isInteger(i) && i >= 0 && i < TEAMS.length) && t[0] !== t[1]) room.teams = [t[0], t[1]];
+    if (!room || room.state !== 'lobby' || !data) return;
+    const host = room.host === socket.id, m = room.members.get(socket.id);
+    if (host) {
+      if (MODES.includes(data.mode)) room.mode = data.mode;
+      if (Number.isInteger(data.pitch) && PITCHES[data.pitch]) room.pitch = data.pitch;
+      if ([3, 5].includes(data.minutes)) room.minutes = data.minutes;
+      if (typeof data.swap === 'boolean') room.swap = data.swap;
+    }
+    if (Array.isArray(data.teams) && data.teams.length === 2 && m) room.teams = chooseTeams(room.teams, data.teams, host ? [0, 1] : [m.team]);
     broadcastRoom(room);
   });
 
@@ -1461,6 +1490,31 @@ function selfTest() {
       assert(tired, 'la prueba llega a cansarse');
       rooms.delete(r.code);
     }
+  }
+  // 5f3) Único humano del equipo: el control pasa al compañero CPU con la pelota; con dos humanos, no.
+  {
+    const r = newRoom('t', 3, 3);
+    r.state = 'play'; usePitch(r);
+    const h = makePlayer(r, 0, 'field', cleanProfile({ name: 'Ana' }), 'a');
+    const mate = makePlayer(r, 0, 'field', { name: 'CPU', num: 7 }, null), opp = makePlayer(r, 1, 'field', { name: 'CPU', num: 9 }, null);
+    r.players = [h, mate, opp]; h.input = B.RIGHT;
+    controlBall(r, opp); autoSwitch(r);
+    assert.strictEqual(h.sid, 'a', 'la pelota del rival no cambia el control');
+    controlBall(r, mate); autoSwitch(r);
+    assert(mate.sid === 'a' && mate.name === 'Ana' && mate.num === 7 && mate.input === B.RIGHT && !mate.pressed, 'el control pasa al que la tiene');
+    assert(h.sid === null && h.name === 'CPU' && h.input === 0, 'el anterior queda para la CPU');
+    const other = makePlayer(r, 0, 'field', { name: 'CPU', num: 5 }, null);
+    r.players.push(makePlayer(r, 0, 'field', cleanProfile({}), 'b'), other);
+    controlBall(r, other); autoSwitch(r);
+    assert.strictEqual(other.sid, null, 'con dos humanos en el equipo no cambia');
+    rooms.delete(r.code);
+    // Selección: cada uno la de su equipo, el anfitrión las dos; pedir la del rival las intercambia.
+    assert.deepStrictEqual(chooseTeams([0, 1], [0, 5], [1]), [0, 5]);
+    assert.deepStrictEqual(chooseTeams([0, 1], [3, 1], [1]), [0, 1], 'no cambia la del otro equipo');
+    assert.deepStrictEqual(chooseTeams([0, 1], [0, 0], [1]), [1, 0], 'intercambio');
+    assert.deepStrictEqual(chooseTeams([0, 1], [2, 3], [0, 1]), [2, 3]);
+    assert.deepStrictEqual(chooseTeams([0, 1], [1, 0], [0, 1]), [1, 0]);
+    assert.deepStrictEqual(chooseTeams([0, 1], [99, -1], [0, 1]), [0, 1]);
   }
   // 5g) Entradas frontales/laterales limpias, por atrás falta; ventana y castigo por errar.
   for (const angle of [0, Math.PI / 2, Math.PI]) {

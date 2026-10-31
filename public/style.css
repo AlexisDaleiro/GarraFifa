@@ -79,6 +79,7 @@ body {
 h3 { font-family: var(--font-title); font-weight: 400; margin: 0 0 4px; font-size: 16px; color: var(--accent); letter-spacing: 1px; }
 
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.field.check { flex-direction: row; align-items: center; gap: 8px; text-transform: none; letter-spacing: 0; }
 input, select {
   font: 700 16px var(--font-body);
   color: var(--ink);

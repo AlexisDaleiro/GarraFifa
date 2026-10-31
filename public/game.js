@@ -216,6 +216,7 @@
     ctx.font='700 5.5px "Chakra Petch", sans-serif';for(const p of list)p.labelWidth=ctx.measureText(p.name).width+5;
     roster = new Map(list.map(p => [p.id, p]));
     const me = list.find(p => p.sid === socket.id);
+    if ((me ? me.id : 0) !== myPid) leadW = 0; // cambió el jugador controlado: la predicción entra de a poco
     myPid = me ? me.id : 0;
   });
 
@@ -304,6 +305,7 @@
   $('lobbyPitch').onchange = () => { const i = +$('lobbyPitch').value; socket.emit('settings', { pitch: i, mode: PITCHES[i].mode }); };
   $('lobbyMode').onchange = () => socket.emit('settings', { mode: +$('lobbyMode').value });
   $('lobbyMinutes').onchange = () => socket.emit('settings', { minutes: +$('lobbyMinutes').value });
+  $('lobbySwap').onchange = () => socket.emit('settings', { swap: $('lobbySwap').checked });
   for (const t of [0, 1]) {
     const sel = $('teamSel' + t);
     TEAMS.forEach((tm, i) => sel.add(new Option(tm.name, i)));
@@ -358,7 +360,7 @@
     for (const t of [0, 1]) {
       const k = teamKit(t), tm = TEAMS[r.teams[t]];
       $('teamSel' + t).value = r.teams[t];
-      $('teamSel' + t).disabled = !isHost;
+      $('teamSel' + t).disabled = !isHost && !(me && me.team === t); // cada uno elige la de su equipo
       $('teamName' + t).textContent = (t ? 'VISITANTE · ' : 'LOCAL · ') + tm.name.toUpperCase();
       $('teamCard' + t).style.background = `linear-gradient(160deg, ${k.c1} 0%, #10131c 80%)`;
       $('tn' + t).textContent = tm.code;
@@ -379,7 +381,8 @@
     theme(teamKit(me?me.team:0));
     $('lobbyPitch').value = r.pitch;
     $('lobbyMinutes').value = r.minutes;
-    $('lobbyMode').disabled = $('lobbyPitch').disabled = $('lobbyMinutes').disabled = !isHost;
+    $('lobbySwap').checked = r.swap !== false;
+    $('lobbyMode').disabled = $('lobbyPitch').disabled = $('lobbyMinutes').disabled = $('lobbySwap').disabled = !isHost;
     $('btnStart').style.display = isHost ? '' : 'none';
     if (!$('lobbyMsg').textContent.startsWith('¡Enlace')) {
       msg('lobbyMsg', isHost ? 'Los huecos vacíos los juega la CPU. ¡Dale a jugar cuando quieras!' : 'Esperando a que el anfitrión inicie el partido…');
