@@ -4,8 +4,8 @@ const {selectClip,materialRole,palette,updateAction,createBackend,inPlace,valida
 assert.equal(CROSSFADE,.15);
 for(const [p,a,o,expected] of [
  [{st:'run',flags:0},{speed:0},{},'idle'],
- [{st:'run',flags:0},{speed:2.5,run:1},{},'jog'],
- [{st:'run',flags:2},{speed:3.45},{},'sprint'],
+ [{st:'run',flags:0},{speed:2.125,run:1},{},'jog'],
+ [{st:'run',flags:2},{speed:2.76},{},'sprint'],
  [{st:'run',flags:0},{speed:3,sprint:.9},{},'sprint'],
  [{st:'run',flags:4},{speed:2},{},'kick'],
  [{st:'run',flags:36},{speed:2},{},'pass'],
@@ -47,14 +47,14 @@ class Mixer {
 }
 const clips=Object.fromEntries(CLIPS.map(name=>[name,{name,duration:.8,tracks:[{name:'Hips.quaternion'}]}]));
 const actor={actions:Object.fromEntries(CLIPS.map(name=>[name,new Action(clips[name])])),mixer:{update(){}},referenceSpeed:{jog:150,sprint:207}};
-updateAction(actor,{st:'run',flags:0},{speed:2.5},{},1/60);
-assert.equal(actor.current,'jog');assert.equal(actor.action.rate,CADENCE);
-updateAction(actor,{st:'run',flags:2},{speed:3.45},{},1/60);
+updateAction(actor,{st:'run',flags:0},{speed:2.125},{},1/60);
+assert.equal(actor.current,'jog');assert.equal(actor.action.rate,CADENCE*.85);
+updateAction(actor,{st:'run',flags:2},{speed:2.76},{},1/60);
 assert.equal(actor.current,'jog','permanencia mínima evita alternar por un frame');
-for(let i=0;i<30;i++)updateAction(actor,{st:'run',flags:2},{speed:3.45},{},1/60);
-assert.equal(actor.current,'sprint');assert(Math.abs(actor.action.rate-CADENCE)<.01);assert.equal(actor.action.fade.time,fadeDuration('jog','sprint'));
-updateAction(actor,{st:'run',flags:2},{speed:1.725},{},1/60);assert(actor.action.rate>CADENCE*.5&&actor.action.rate<CADENCE,'cadencia filtrada');
-for(let i=0;i<60;i++)updateAction(actor,{st:'run',flags:2},{speed:1.725},{},1/60);assert(Math.abs(actor.action.rate-CADENCE*.5)<.001);
+for(let i=0;i<30;i++)updateAction(actor,{st:'run',flags:2},{speed:2.76},{},1/60);
+assert.equal(actor.current,'sprint');assert(Math.abs(actor.action.rate-CADENCE*.8)<.01);assert.equal(actor.action.fade.time,fadeDuration('jog','sprint'));
+updateAction(actor,{st:'run',flags:2},{speed:1.38},{},1/60);assert(actor.action.rate>CADENCE*.4&&actor.action.rate<CADENCE*.8,'cadencia filtrada');
+for(let i=0;i<60;i++)updateAction(actor,{st:'run',flags:2},{speed:1.38},{},1/60);assert(Math.abs(actor.action.rate-CADENCE*.4)<.001);
 updateAction(actor,{st:'run',flags:4},{speed:0},{},1/60);
 const kick=actor.action;
 updateAction(actor,{st:'run',flags:0},{speed:2.5},{},1/60);assert.equal(actor.action,kick,'no cortar el golpe al caer el flag');
