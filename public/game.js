@@ -11,7 +11,7 @@
   const toon = ToonFX.create(),C=FootballContinuity;
   const netClock=C.createClock(),liveSampler=C.createSampler(),replaySampler=C.createSampler(),presentation=C.createPresenter();
   const eventGate=C.createEventGate(),predictor=C.createPredictor();let networkEpoch=0;
-  function resetNetwork(){networkEpoch++;predictor.reset();eventGate.reset();snaps.length=0;netClock.reset();liveSampler.reset();replaySampler.reset();presentation.reset();painted=false;sceneBlend.left=sceneBlend.weight=0;ballTrail.clear();lastBallPos=null;clearEffects(particles,particlePool);clearEffects(floaters,floaterPool);clearEffects(rings,ringPool);clearEffects(confetti,confettiPool);anim.clear();}
+  function resetNetwork(){networkEpoch++;predictor.reset();leadX=leadY=leadW=0;eventGate.reset();snaps.length=0;netClock.reset();liveSampler.reset();replaySampler.reset();presentation.reset();painted=false;sceneBlend.left=sceneBlend.weight=0;ballTrail.clear();lastBallPos=null;clearEffects(particles,particlePool);clearEffects(floaters,floaterPool);clearEffects(rings,ringPool);clearEffects(confetti,confettiPool);anim.clear();}
 
   const ST_NAMES = ['run', 'slide', 'recover', 'down', 'spin', 'croq', 'step', 'fake', 'rainbow', 'fooled', 'hold', 'dive'];
   const DASH_SHORT=[3,3],DASH_LONG=[5,4],DASH_NONE=[];
@@ -149,10 +149,21 @@
   const msg = (id, text) => { $(id).textContent = text; };
 
   // ---------- Red ----------
-  // WebSocket primero: el long-polling entrega en ráfagas y el partido se ve a los tirones.
-  const socket = io({ transports: ['websocket', 'polling'], tryAllTransports: true });
+  // WebSocket directo: sin fallback silencioso a polling ni inputs viejos al reconectar.
+  const socket = io({ transports: ['websocket'], reconnectionDelay: 250, reconnectionDelayMax: 2000 });
   let rtt = 0, rttEst = 0; // rttEst suavizado: lo usa la predicción del jugador propio
-  setInterval(() => { if (!socket.connected || !inGame()) return; const t0 = performance.now(); socket.emit('lat', () => { rtt = performance.now() - t0; rttEst = rttEst ? rttEst + (rtt - rttEst) * 0.3 : rtt; if (menuOpen) renderPause(); }); }, 1000);
+  const pingSamples=[];let probing=false,lastProbe=-Infinity;
+  function probeLatency(){
+    if(!socket.connected||probing||document.hidden||performance.now()-lastProbe<750)return;
+    probing=true;const t0=lastProbe=performance.now(),epoch=networkEpoch;
+    socket.timeout(1500).volatile.emit('lat',err=>{
+      probing=false;if(err||epoch!==networkEpoch)return;
+      rtt=performance.now()-t0;pingSamples.push(rtt);if(pingSamples.length>5)pingSamples.shift();
+      const median=[...pingSamples].sort((a,b)=>a-b)[Math.floor(pingSamples.length/2)];
+      rttEst=rttEst?rttEst+(median-rttEst)*.3:median;if(menuOpen)renderPause();
+    });
+  }
+  setInterval(()=>{if(inGame()||roomInfo)probeLatency();},1000);
   let roomInfo = null, roster = new Map(), myPid = 0, snaps = [], lastState = '';
   let endTimer = 0;
 
@@ -174,6 +185,7 @@
   const netUI = () => { $('btnCreate').disabled = $('btnJoin').disabled = !socket.connected; };
   netUI();
   socket.on('connect', () => {
+    rtt=rttEst=0;pingSamples.length=0;probing=false;lastProbe=-Infinity;probeLatency();
     netUI();
     if (!rejoin) return msg('menuMsg', '');
     socket.emit('join', { ...rejoin, cid, profile }, res => {
@@ -182,7 +194,7 @@
       msg('menuMsg', 'La sala ya no existe. Creá otra o entrá con otro código.');
     });
   });
-  socket.on('connect_error', () => msg('menuMsg', 'Sin conexión con el servidor. Reintentando…'));
+  socket.on('connect_error', () => msg('menuMsg', 'No se pudo abrir WebSocket. Revisá la conexión o probá otra red. Reintentando…'));
   socket.on('disconnect', () => {
     roomInfo = null; resetNetwork(); toon.reset(); netUI();
     show('menu');
@@ -194,6 +206,7 @@
     if(!roomInfo||roomInfo.teams[0]!==info.teams[0]||roomInfo.teams[1]!==info.teams[1])kitCache.clear();
     if(info.state==='lobby')toon.reset();
     roomInfo = info;
+    probeLatency();
     if (PITCHES[info.pitch] && PITCHES[info.pitch] !== pitch) setPitch(info.pitch);
     const mine = info.members.find(m => m.id === socket.id);
     rejoin = { code: info.code, team: mine && mine.team };
@@ -253,12 +266,12 @@
   function predictMe(view,now,dt){
     const last=snaps[snaps.length-1],prev=snaps[snaps.length-2],info=roster.get(myPid),me=myPid&&row(view,myPid);
     if(!me)return;
-    const p=prev&&info&&info.kind==='field'&&roomInfo&&roomInfo.pace&&last.s==='play'&&view.state==='play'&&!(last.rp===myPid&&!(bits&DIRS))
-      ?predictor.predict(last,prev,myPid,(last.t+netClock.offset)*TICK_MS-rttEst,now,roomInfo.pace,W,H,!!pitch.wall):null;
+    const p=prev&&info&&info.kind==='field'&&roomInfo&&!roomInfo.paused&&roomInfo.pace&&last.s==='play'&&view.state==='play'&&!(last.rp===myPid&&!(bits&DIRS))
+      ?predictor.reconcile(last,prev,myPid,(last.t+netClock.offset)*TICK_MS-rttEst,now,roomInfo.pace,W,H,!!pitch.wall):null;
     if(p){leadX=p.x-me.x;leadY=p.y-me.y;leadW=Math.min(1,leadW+dt/.15);me.face=p.face;me.speed=Math.min(7.5,Math.hypot(p.vx,p.vy));}
     else leadW=Math.max(0,leadW-dt/.15);
     const w=C.ease(leadW),dx=leadX*w,dy=leadY*w;me.x+=dx;me.y+=dy;
-    if(view.owner===myPid){view.ball.x+=dx;view.ball.y+=dy;}
+    if(view.owner===myPid&&last.o===myPid){view.ball.x+=dx;view.ball.y+=dy;}
     if(netDiag&&p){netDiag.predFrames++;netDiag.maxLead=Math.max(netDiag.maxLead,Math.hypot(leadX,leadY));}
   }
   const row=(view,id)=>{for(const p of view.players)if(p.id===id)return p;return null;};
@@ -418,7 +431,7 @@
 
   // ---------- Entrada ----------
   let bits = 0;
-  function sendInput() { socket.emit('input', bits); predictor.input(bits, performance.now()); }
+  function sendInput() { predictor.input(bits, performance.now()); if(socket.connected)socket.emit('input', bits); }
   function setBit(bit, on) {
     const nb = on ? bits | bit : bits & ~bit;
     if (nb === bits) return;
@@ -1147,7 +1160,8 @@
   let lastFrame = performance.now();
   function frame(now) {
     requestAnimationFrame(frame);
-    const dt = Math.min(40, Math.max(0,now - lastFrame)) / TICK_MS;
+    const elapsed=Math.min(250,Math.max(0,now-lastFrame))/1000;
+    const dt = Math.min(40, elapsed*1000) / TICK_MS;
     lastFrame = now;
     if(document.hidden||!inGame()||netClock.offset===null)return;
     renderTime=now;visualTime+=dt*TICK_MS;
@@ -1160,7 +1174,7 @@
     }
     if (!view) { view = sample(snaps, liveTick); if (view && predictOn) predictMe(view, now, dt / 60); }
     if(view){
-      const shown=presentation.update(view,dt/60);if(shown.discontinuity)transitionScene();
+      const shown=presentation.update(view,elapsed);if(shown.discontinuity)transitionScene();
       // Saltos legítimos (saque, gol, vuelta de segundo plano) aparte de los que ocurren en juego continuo.
       if(netDiag&&!replay){const play=!netClock.resumed&&shown.state==='play'&&shown.t-stateTick>90;netDiag.frames++;if(shown.discontinuity)netDiag[netClock.resumed?'resumeJumps':play?'playJumps':'setJumps']++;if(play)netDiag.maxPlayStep=Math.max(netDiag.maxPlayStep,shown.maxStep);}
       render(shown,dt);

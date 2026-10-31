@@ -37,7 +37,7 @@ for(let now=0;now<9900;now+=1000/60){
  const t=net.advance(now);if(t===null)continue;
  const v=view.update(samp.sample(buffer,t),1/60),x=v.players[0].x;
  if(lastX!==null)maxStep=Math.max(maxStep,Math.abs(x-lastX));lastX=x;
- assert(net.delay>=4&&net.delay<=10);
+ assert(net.delay>=C.NET.minBuffer&&net.delay<=C.NET.maxBuffer);
 }
 assert(maxStep<5,'movimiento continuo con jitter: '+maxStep);
 assert(lastX>1400,'el reloj progresa');
@@ -96,7 +96,7 @@ const pauses=(seed,every)=>{const r=rnd(seed),list=[];for(let t=2000;t<40000;t+=
 // jugador cuando llegue el input enviado ahora; sin predicción esa distancia es el lag que se siente.
 {const P={run:2.125,sprint:2.76,tired:1.615,carry:.9,boost:1.35,charge:.6,acc:.12,ballAcc:.09,turn:.3,ballTurn:.12,reverseBrake:.78,reverseStop:.2};
  const r1=v=>Math.round(v*10)/10;
- function play({up=40,down=40,jit=()=>0,jitUp=()=>0,stall=()=>null,frame=()=>1000/60,dur=20000}){
+ function play({up=40,down=40,jit=()=>0,jitUp=()=>0,stall=()=>null,frame=()=>1000/60,dur=20000,reconcile=false,bumps=false}){
   const r=rnd(3),fr=rnd(5),plan=t=>[8|16,4,1|8,2|4|16,0][Math.floor(t/700)%5];
   const sv={x:150,y:200,vx:0,vy:0,face:0,stamina:100,tired:false,boost:false,ball:false,charging:false,w:640,h:400,wall:true};
   const truth=[],snaps=[],inputs=[];let sent=-1,lastAt=0;
@@ -104,7 +104,7 @@ const pauses=(seed,every)=>{const r=rnd(seed),list=[];for(let t=2000;t<40000;t+=
   let ii=0,bits=0;
   for(let k=0;k*C.TICK<dur+1000;k++){
    while(ii<inputs.length&&inputs[ii].at<=k*C.TICK)bits=inputs[ii++].b;
-   C.stepRun(sv,bits,P);truth[k]={x:sv.x,y:sv.y};
+   C.stepRun(sv,bits,P);if(bumps&&k>0&&k%120===0)sv.x+=8;truth[k]={x:sv.x,y:sv.y};
    if(k%2===0){const at=Math.max(k*C.TICK+down+jit(r),stall(k*C.TICK)??0,lastAt);lastAt=at;snaps.push({at,s:{t:k,s:'play',o:0,p:[[1,r1(sv.x),r1(sv.y),Math.round(sv.face*100)/100,0,Math.round(sv.stamina),0,sv.tired?1:0]],b:[0,0,0]}});}
   }
   const clock=C.createClock(),pred=C.createPredictor(),buf=[],samp=C.createSampler();
@@ -114,7 +114,7 @@ const pauses=(seed,every)=>{const r=rnd(seed),list=[];for(let t=2000;t<40000;t+=
    while(pi<inputs.length&&inputs[pi].t<=now)pred.input(inputs[pi].b,inputs[pi++].t);
    while(si<snaps.length&&snaps[si].at<=now){const d=snaps[si++];if(clock.receive(d.s.t,d.at))buf.push(d.s);}
    const t=clock.advance(now);if(t===null||buf.length<2||now<3000)continue;
-   const p=pred.predict(buf[buf.length-1],buf[buf.length-2],1,(buf[buf.length-1].t+clock.offset)*C.TICK-(up+down),now,P,640,400,true);
+   const p=pred[reconcile?'reconcile':'predict'](buf[buf.length-1],buf[buf.length-2],1,(buf[buf.length-1].t+clock.offset)*C.TICK-(up+down),now,P,640,400,true);
    const want=truth[Math.round((now+up)/C.TICK)],old=samp.sample(buf,t).players[0];
    const e=Math.hypot(p.x-want.x,p.y-want.y);err=Math.max(err,e);mean+=e;lag+=Math.hypot(old.x-want.x,old.y-want.y);n++;
    if(last&&Math.hypot(p.x-last.x,p.y-last.y)>2.8*dt/C.TICK*1.6+1.5)jumps++;last={x:p.x,y:p.y};
@@ -126,7 +126,30 @@ const pauses=(seed,every)=>{const r=rnd(seed),list=[];for(let t=2000;t<40000;t+=
   assert(r.err<limit,`predicción ${name}: error ${r.err.toFixed(2)}`);
   assert(r.lag>r.mean*4,`predicción ${name}: no mejora el lag (${r.lag.toFixed(1)} vs ${r.mean.toFixed(1)})`);
   if(!opts.stall&&!opts.jitUp)assert.equal(r.jumps,0,`predicción ${name}: ${r.jumps} saltos`);
- }}
+ }
+ const options={up:80,down:80,jitUp:expo(25),bumps:true},raw=play(options),smooth=play({...options,reconcile:true});
+ assert(smooth.jumps<raw.jumps,'la reconciliación reduce los saltos de corrección');
+ assert(smooth.mean<smooth.lag/3,'mantiene la ventaja de respuesta frente a esperar snapshots');
+ console.log(`reconciliación con jitter: ${raw.jumps} → ${smooth.jumps} saltos; error medio ${smooth.mean.toFixed(1)} px`);
+ // Un input nuevo responde en el próximo tick; un desplazamiento del servidor se absorbe gradualmente.
+ const pred=C.createPredictor(),a=snap(0,150),b=snap(2,150);a.p[0][2]=b.p[0][2]=200;
+ pred.reconcile(b,a,1,1000,1000,P,640,400,true);pred.input(8,1000);
+ const first=pred.reconcile(b,a,1,1000,1000+C.TICK,P,640,400,true).x;
+ assert(first>150&&first<151,'input inmediato, sin esperar otro snapshot');
+ const hit=snap(3,158);hit.p[0][2]=200;
+ const corrected=pred.reconcile(hit,b,1,1000+C.TICK,1000+C.TICK*2,P,640,400,true).x;
+ assert(corrected-first<5,'corrección sin teletransporte');
+ for(let i=3;i<65;i++)pred.reconcile(hit,b,1,1000+C.TICK,1000+C.TICK*i,P,640,400,true);
+ const settled=pred.reconcile(hit,b,1,1000+C.TICK,2100,P,640,400,true).x;
+ assert(Math.abs(settled-pred.predict(hit,b,1,1000+C.TICK,2100,P,640,400,true).x)<1,'converge al servidor');
+ pred.reset();assert.equal(pred.reconcile(b,a,1,1000,1000,P,640,400,true).correction,0);
+}
+// Presupuesto de latencia real del reloj y presentación, con snapshots a la cadencia del servidor.
+{const {measure}=require('../tools/measure-network');const stable=measure(),bursts=measure({jitter:10,stall:250});
+ assert(stable.bufferMedianMs<=30,'buffer estable de baja latencia');
+ assert(stable.playoutMedianMs<=115,'80 ms de red + buffer acotado');
+ assert(bursts.maxStep<2,'ráfagas sin saltos');
+}
 const camera=C.createCamera(),person={x:850,y:500};let cx=camera.x,cy=camera.y;
 for(let i=0;i<240;i++){
  const c=camera.update(i<120?900:30,200,i<80?person:null,i>160,i<100?500:1200,i<100?460:300,1/60);

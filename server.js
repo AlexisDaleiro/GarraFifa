@@ -5,12 +5,13 @@ const path = require('path');
 const { Server } = require('socket.io');
 const { TEAMS } = require('./public/teams.js');
 const { PITCHES, MODES, pitchGeom } = require('./public/pitches.js');
+const { NET } = require('./public/continuity.js');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
 const server = http.createServer(app);
 // pingTimeout alto: en el celular la pestaña se congela un rato al cambiar de app.
-const io = new Server(server, { pingTimeout: 45000 });
+const io = new Server(server, { pingTimeout: 45000, transports: ['websocket'] });
 const ROOM_GRACE_MS = 60000; // sala vacía por corte de conexión: se guarda para poder volver
 const PORT = process.env.PORT || 3000;
 
@@ -21,7 +22,7 @@ const GOAL_DEPTH = 26;
 function usePitch(room) { ({ W, H, CX, CY, GOAL_TOP, GOAL_BOT, GOAL_H, BOX_D, BOX_TOP, BOX_BOT, PEN_SPOT } = pitchGeom(PITCHES[room.pitch] || PITCHES[0])); }
 usePitch({ pitch: 0 });
 const TICK = 60, DT_MS = 1000 / TICK;
-const SEND_EVERY = 2; // snapshots a 30 Hz: la mitad de mensajes por jugador; el cliente interpola
+const SEND_EVERY = NET.sendEvery; // 60 Hz: menos espera entre input, simulación y snapshot
 const GRAV = 0.32, PR = 9, BALL_R = 4;
 // Ritmo por tick (60 Hz). No modifica relojes ni pausas del partido.
 const PACE = {
@@ -1048,6 +1049,21 @@ function step(room) {
   if (room.timeLeft <= 0 && (room.state === 'play' || room.state === 'setpiece')) endMatch(room);
 }
 
+// La conexión lenta recibe el estado más nuevo al liberarse; eventos conservados aparte.
+const pendingEvents = new WeakMap();
+function sendSnapshot(room, clients = [...room.members.keys()].map(id => io.sockets.sockets.get(id)).filter(Boolean)) {
+  const s = snapshot(room);
+  for (const client of clients) {
+    let events = pendingEvents.get(client) || [];
+    if (s.e) events.push(...s.e);
+    if (events.length > 512) events.splice(0, events.length - 512);
+    if (!client.conn.transport.writable) { pendingEvents.set(client, events); continue; }
+    const packet = events.length ? { ...s, e: events } : s;
+    client.compress(false).emit('s', packet);
+    pendingEvents.delete(client);
+  }
+}
+
 function snapshot(room) {
   usePitch(room);
   const b = room.ball;
@@ -1077,6 +1093,7 @@ io.on('connection', socket => {
   let room = null;
 
   const leave = keep => {
+    pendingEvents.delete(socket);
     if (!room) return;
     const r = room;
     room = null;
@@ -1642,6 +1659,20 @@ function selfTest() {
     assert.strictEqual(r.ball.vx,vx);assert.strictEqual(r.ball.vy,vy);assert.strictEqual(r.pass.to,mate.id);
     rooms.delete(r.code);
   }
+  // Conexión lenta: sólo estado fresco, con eventos conservados y sin frenar al otro cliente.
+  {
+    const r=newRoom('t',1,3);r.state='play';
+    const client=()=>({conn:{transport:{writable:true}},packets:[],compress(){return this;},emit(name,s){this.packets.push(s);}});
+    const fast=client(),slow=client();slow.conn.transport.writable=false;
+    r.tick=1;emitEv(r,{type:'kick',id:1});sendSnapshot(r,[fast,slow]);
+    r.tick=2;r.ball.x=200;emitEv(r,{type:'goal',team:0});sendSnapshot(r,[fast,slow]);
+    assert.strictEqual(fast.packets.length,2);assert.strictEqual(slow.packets.length,0);
+    r.tick=3;r.ball.x=220;slow.conn.transport.writable=true;sendSnapshot(r,[fast,slow]);
+    assert.strictEqual(slow.packets.length,1);assert.strictEqual(slow.packets[0].t,3);
+    assert.strictEqual(slow.packets[0].b[0],220,'no acumula posiciones viejas');
+    assert.deepStrictEqual(slow.packets[0].e.map(e=>e.type),['kick','goal'],'conserva eventos');
+    assert(!fast.packets[2].e,'no repite eventos al cliente al día');rooms.delete(r.code);
+  }
   // 6) Partidos completos solo con bots: sin NaN y terminan.
   for (const [mode, pitch] of [[1, 0], [2, 0], [3, 0], [4, 2], [6, 1], [10, 0], [5, 3], [3, 4]]) {
     const r = newRoom('t', mode, 3, pitch);
@@ -1675,7 +1706,7 @@ else {
         room.acc = Math.min(room.acc + elapsed, 250);
         let stepped = false;
         while (room.acc >= DT_MS) { room.acc -= DT_MS; step(room); stepped = true; }
-        if (stepped && room.tick - (room.sentTick || 0) >= SEND_EVERY) { room.sentTick = room.tick; io.to(room.code).emit('s', snapshot(room)); }
+        if (stepped && room.tick - (room.sentTick || 0) >= (room.paused ? 6 : SEND_EVERY)) { room.sentTick = room.tick; sendSnapshot(room); }
       } catch (e) {
         // Un error en una sala no tira el servidor entero: esa sala vuelve al lobby.
         console.error(`Error en sala ${room.code}:`, e);

@@ -2,6 +2,8 @@
 (function(root){
   'use strict';
   const TICK=1000/60,ST=['run','slide','recover','down','spin','croq','step','fake','rainbow','fooled','hold','dive'];
+  // Red: ticks de simulación y milisegundos; la física sigue en PACE.
+  const NET={sendEvery:1,minBuffer:1.5,maxBuffer:18,bufferWindow:3000,bufferPercentile:.98,bufferFall:800,maxAhead:1,reconcileMs:80,correctionSpeed:120,reconcileMax:40};
   const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v));
   const alpha=(dt,tau)=>1-Math.exp(-Math.max(0,Math.min(dt,.05))/tau);
   const ease=t=>{t=clamp(t);return t*t*(3-2*t);};
@@ -10,10 +12,10 @@
   const rotationAlpha=(distance,dt,rate=24)=>distance>1e-8?Math.min(alpha(dt,.035),rate*clamp(dt,0,.05)/distance):alpha(dt,.035);
   function createClock(){
     // offset: llegada más temprana vista (los paquetes demorados no la mueven; sube despacio si la ruta empeora).
-    // late: pico de demora sobre esa base, decae lento. delay (buffer) cubre ese pico: crece rápido, baja despacio,
-    // así cortes y ráfagas (wifi, celular, long-polling) no traban ni aceleran la imagen.
+    // delay cubre el percentil 98 de los últimos 3 s; un pico aislado no deja varios segundos de atraso.
     // stats: contadores baratos para el diagnóstico optativo (?netdiag=1); nadie los lee si está apagado.
-    const c={offset:null,late:0,jitter:0,delay:4,cursor:null,lastTick:-Infinity,lastArrival:0,lastFrame:null,resumed:false,stats:null};
+    const c={offset:null,late:0,jitter:0,delay:NET.minBuffer,period:NET.sendEvery,cursor:null,lastTick:-Infinity,lastArrival:0,lastFrame:null,resumed:false,stats:null};
+    const offsets=new Float64Array(256),times=new Float64Array(256),scratch=new Float64Array(256);let index=0,count=0;
     const fresh=()=>({packets:0,stale:0,maxArrival:0,maxTickGap:0,holds:0,resumes:0,minDepth:Infinity});
     c.stats=fresh();c.takeStats=()=>{const s=c.stats;c.stats=fresh();return s;};
     c.receive=(tick,now)=>{
@@ -25,30 +27,34 @@
         const gap=Math.min(250,now-c.lastArrival),error=Math.abs((now-c.lastArrival)/TICK-(tick-c.lastTick));
         c.jitter+=(Math.min(error,12)-c.jitter)*.08;
         c.offset=Math.min(off,c.offset+gap/TICK*.01);
-        c.late=Math.max(off-c.offset,c.late-gap/TICK*.02);
-        const want=clamp(c.late+1.5,4,30);
-        c.delay+=(want-c.delay)*(want>c.delay?.5:1-Math.exp(-gap/4000));
+        c.period+= (Math.min(6,tick-c.lastTick)-c.period)*.1;
       }
+      offsets[index]=off;times[index]=now;index=(index+1)%256;count=Math.min(256,count+1);
+      let n=0;for(let i=0;i<count;i++)if(times[i]>=now-NET.bufferWindow)scratch[n++]=offsets[i];
+      const sorted=scratch.subarray(0,n);sorted.sort();c.late=Math.max(0,sorted[Math.floor((n-1)*NET.bufferPercentile)]-c.offset);
+      const want=clamp(c.period+.5+c.late,NET.minBuffer,NET.maxBuffer),gap=Math.max(0,now-c.lastArrival);
+      c.delay+=(want-c.delay)*(want>c.delay?.65:1-Math.exp(-gap/NET.bufferFall));
       c.lastTick=tick;c.lastArrival=now;return true;
     };
     c.advance=now=>{
       if(c.offset===null)return null;
       const target=now/TICK-c.offset-c.delay,gap=c.lastFrame===null?0:now-c.lastFrame;
       // Mientras falten datos no se reinicia: saltar al objetivo sería saltar a donde todavía no hay snapshots.
-      c.resumed=gap>250||(c.cursor!==null&&c.cursor<=c.lastTick&&Math.abs(target-c.cursor)>40);
+      c.resumed=gap>250;
       if(c.cursor===null||c.resumed){c.cursor=Math.min(target,c.lastTick);if(c.lastFrame!==null)c.stats.resumes++;}
       else{
-        // Se avanza el tiempo real del frame (un celular a 20 fps no se atrasa) con corrección de ±8%.
+        // Tiempo real del frame; recupera atraso hasta 15% más rápido, sin saltar a la ráfaga nueva.
         // Si faltan snapshots el reloj frena suave antes del último recibido: los jugadores aminoran en vez de
         // extrapolar, quedarse quietos y saltar cuando llega la ráfaga.
-        let rate=1+clamp((target-c.cursor)*.05,-.08,.08);const ahead=c.lastTick-c.cursor;
-        if(ahead<1){rate*=clamp((ahead+1)/2);c.stats.holds++;}
-        c.cursor=Math.min(c.cursor+Math.max(0,gap)/TICK*rate,Math.max(c.cursor,c.lastTick+1));
+        const ticks=Math.max(0,gap)/TICK;
+        let rate=1+clamp((target-c.cursor-ticks)*.05,-.08,.15);const ahead=c.lastTick-c.cursor;
+        if(ahead<.5){rate*=clamp((ahead+NET.maxAhead)/(NET.maxAhead+.5));c.stats.holds++;}
+        c.cursor=Math.min(c.cursor+ticks*rate,Math.max(c.cursor,c.lastTick+NET.maxAhead));
       }
       c.stats.minDepth=Math.min(c.stats.minDepth,c.lastTick-c.cursor);
       c.lastFrame=now;return c.cursor;
     };
-    c.reset=()=>{c.offset=c.cursor=c.lastFrame=null;c.late=c.jitter=0;c.delay=4;c.lastTick=-Infinity;c.lastArrival=0;};
+    c.reset=()=>{c.offset=c.cursor=c.lastFrame=null;c.late=c.jitter=0;c.delay=NET.minBuffer;c.period=NET.sendEvery;c.lastTick=-Infinity;c.lastArrival=0;index=count=0;c.stats=fresh();};
     return c;
   }
   const row=(s,id)=>{if(!s)return null;for(let i=0;i<s.p.length;i++)if(s.p[i][0]===id)return s.p[i];return null;};
@@ -70,19 +76,38 @@
   }
   // Predicción del jugador propio: sin ella el stick tarda RTT + buffer (~200-400 ms en celular) en verse.
   // Cada frame se rehace desde el último snapshot con los inputs locales que el servidor todavía no aplicó,
-  // así el servidor sigue mandando y cualquier error (choque, empujón) se corrige solo en el frame siguiente.
+  // El servidor sigue mandando; reconcile absorbe el error de choques y empujones sin saltos.
   function createPredictor(){
     const hist=[0,0],s={};
+    const anchor={last:null,prev:null,id:0,from:0};let ox=0,oy=0,lastNow=0;
+    function forecast(last,prev,id,from,now,P,w,h,wall){
+      const a=row(last,id),b=row(prev,id);if(!a||!b||a[4]!==0)return null;
+      const d=Math.max(1,last.t-prev.t),n=clamp(Math.round((now-from)/TICK),0,30);
+      Object.assign(s,{x:a[1],y:a[2],vx:(a[1]-b[1])/d,vy:(a[2]-b[2])/d,face:a[3],stamina:a[5],tired:!!(a[7]&1),boost:!!(a[7]&8),ball:last.o===id,charging:last.o===id&&a[6]>0,w,h,wall});
+      let i=hist.length-2;while(i>0&&hist[i]>from)i-=2;
+      for(let k=1;k<=n;k++){const t=from+k*TICK;while(i+2<hist.length&&hist[i+2]<=t)i+=2;stepRun(s,hist[i+1],P);}
+      return s;
+    }
     return {
       input(bits,now){hist.push(now,bits);if(hist.length>400)hist.splice(0,hist.length-400);},
-      reset(){hist.length=0;hist.push(0,0);},
+      reset(){hist.length=0;hist.push(0,0);anchor.last=null;ox=oy=lastNow=0;},
       // from: hora local en que el servidor aplicó los inputs del snapshot `last`.
-      predict(last,prev,id,from,now,P,w,h,wall){
-        const a=row(last,id),b=row(prev,id);if(!a||!b||a[4]!==0)return null;
-        const d=Math.max(1,last.t-prev.t),n=Math.min(30,Math.round((now-from)/TICK));
-        Object.assign(s,{x:a[1],y:a[2],vx:(a[1]-b[1])/d,vy:(a[2]-b[2])/d,face:a[3],stamina:a[5],tired:!!(a[7]&1),boost:!!(a[7]&8),ball:last.o===id,charging:last.o===id&&a[6]>0,w,h,wall});
-        let i=hist.length-2;while(i>0&&hist[i]>from)i-=2;
-        for(let k=1;k<=n;k++){const t=from+k*TICK;while(i+2<hist.length&&hist[i+2]<=t)i+=2;stepRun(s,hist[i+1],P);}
+      predict:forecast,
+      reconcile(last,prev,id,from,now,P,w,h,wall){
+        const dt=clamp((now-lastNow)/1000,0,.05),same=anchor.last&&anchor.id===id&&last.t>=anchor.last.t&&now-lastNow<250;
+        const old=same&&forecast(anchor.last,anchor.prev,id,anchor.from,now,P,w,h,wall),x=old?.x,y=old?.y;
+        const next=forecast(last,prev,id,from,now,P,w,h,wall);
+        if(!next){anchor.last=null;ox=oy=0;return null;}
+        if(!same)ox=oy=0;
+        else if(old&&(anchor.last!==last||anchor.from!==from)){
+          ox+=x-next.x;oy+=y-next.y;
+          const k=Math.min(1,NET.reconcileMax/(Math.hypot(ox,oy)||1));ox*=k;oy*=k;
+        }
+        // Sólo filtra el error del nuevo snapshot: los inputs siguen respondiendo en el frame actual.
+        const decay=1-Math.exp(-dt*1000/NET.reconcileMs),k=Math.min(decay,NET.correctionSpeed*dt/(Math.hypot(ox,oy)||1));
+        ox*=1-k;oy*=1-k;s.x+=ox;s.y+=oy;
+        if(wall){s.x=clamp(s.x,9,w-9);s.y=clamp(s.y,9,h-9);}
+        s.correction=Math.hypot(ox,oy);Object.assign(anchor,{last,prev,id,from});lastNow=now;
         return s;
       }
     };
@@ -128,7 +153,7 @@
   }
   function createPresenter(){
     const pool=new Map(),out={t:0,state:'',owner:0,players:[],byId:pool,ball:null,rp:0,pt:0,discontinuity:false,maxStep:0};
-    function entity(raw,key,dt,isBall){
+    function entity(raw,key,dt,isBall,elapsed){
       let p=pool.get(key);
       if(!p){p={id:raw.id,x:raw.x,y:raw.y,z:raw.z||0,face:raw.face||0,alpha:1,rx:raw.x,ry:raw.y,ox:0,oy:0,age:1,fade:0};pool.set(key,p);}
       const jump=Math.hypot(raw.x-p.rx,raw.y-p.ry);
@@ -143,7 +168,9 @@
       else{
         if(p.fade===2){p.alpha=Math.min(1,p.alpha+dt/.12);if(p.alpha===1)p.fade=0;}
         p.age=Math.min(1,p.age+dt/.2);const w=1-ease(p.age),k=p.age<1?1:alpha(dt,.025);
-        const dx=(raw.x+p.ox*w-p.x)*k,dy=(raw.y+p.oy*w-p.y)*k,limit=Math.min(1,(isBall?2000:1200)*dt/(Math.hypot(dx,dy)||1));
+        const dx=(raw.x+p.ox*w-p.x)*k,dy=(raw.y+p.oy*w-p.y)*k;
+        const speed=isBall?2000:p.age<1||p.fade?1200:Math.max(NET.correctionSpeed,(raw.speed||0)*60+NET.correctionSpeed);
+        const limit=Math.min(1,speed*elapsed/(Math.hypot(dx,dy)||1));
         p.x+=dx*limit;p.y+=dy*limit;p.z+=(Math.max(0,raw.z||0)-p.z)*alpha(dt,.025);
       }
       if(p.alpha>.01)out.maxStep=Math.max(out.maxStep,Math.hypot(p.x-oldX,p.y-oldY));
@@ -151,10 +178,10 @@
       return p;
     }
     function update(raw,dt){
-      if(!raw)return null;dt=Math.min(.05,Math.max(0,dt));out.discontinuity=false;out.maxStep=0;
+      if(!raw)return null;const elapsed=clamp(dt,0,.25);dt=Math.min(.05,elapsed);out.discontinuity=false;out.maxStep=0;
       out.t=raw.t;out.state=raw.state;out.owner=raw.owner;out.rp=raw.rp;out.pt=raw.pt;
-      let i=0;for(const p of raw.players)out.players[i++]=entity(p,p.id,dt,false);out.players.length=i;
-      out.ball=entity(raw.ball,'ball',dt,true);return out;
+      let i=0;for(const p of raw.players)out.players[i++]=entity(p,p.id,dt,false,elapsed);out.players.length=i;
+      out.ball=entity(raw.ball,'ball',dt,true,elapsed);return out;
     }
     return {update,reset(){pool.clear();out.players.length=0;}};
   }
@@ -211,6 +238,6 @@
       if(seen.has(key))return false;seen.add(key);order.push(key);if(order.length>limit)seen.delete(order.shift());return true;
     },reset(){seen.clear();order.length=0;}};
   }
-  const api={TICK,clamp,alpha,ease,angle,turn,rotationAlpha,height,createClock,stepRun,createPredictor,createSampler,createPresenter,createCamera,createBlend,envelope,createPool,stepParticle,stepConfetti,createTrail,createEventGate};
+  const api={TICK,NET,clamp,alpha,ease,angle,turn,rotationAlpha,height,createClock,stepRun,createPredictor,createSampler,createPresenter,createCamera,createBlend,envelope,createPool,stepParticle,stepConfetti,createTrail,createEventGate};
   root.FootballContinuity=api;if(typeof module!=='undefined')module.exports=api;
 })(typeof window==='undefined'?globalThis:window);
