@@ -7,7 +7,7 @@
   const GOAL_DEPTH = 26;
   const TICK_MS = 1000 / 60, VIEW_H = 360, FM = 110, FS = 2;
   const TILT = 0.78, K = 0.62 / TILT;
-  const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, PASS: 128, CROQ: 256, STEP: 512, SHOOT: 1024 };
+  const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, SWITCH: 32, PASS: 128, CROQ: 256, STEP: 512, SHOOT: 1024 };
   const toon = ToonFX.create(),C=FootballContinuity,A=FootballAttributes;
   const netClock=C.createClock(),liveSampler=C.createSampler(),replaySampler=C.createSampler(),presentation=C.createPresenter();
   const eventGate=C.createEventGate(),predictor=C.createPredictor();let networkEpoch=0;
@@ -17,7 +17,7 @@
   const DASH_SHORT=[3,3],DASH_LONG=[5,4],DASH_NONE=[];
   const KEYMAP = {
     ArrowUp: B.UP, ArrowDown: B.DOWN, ArrowLeft: B.LEFT, ArrowRight: B.RIGHT, Space: B.SPRINT,
-    KeyS: B.PASS, KeyD: B.SHOOT, KeyQ: B.CROQ, KeyE: B.STEP,
+    KeyS: B.PASS, KeyD: B.SHOOT, KeyQ: B.CROQ, KeyE: B.STEP, KeyC: B.SWITCH,
   };
 
   const $ = id => document.getElementById(id);
@@ -176,7 +176,7 @@
 
   function onJoined(res) {
     if (!res || !res.ok) return msg('menuMsg', (res && res.error) || 'No se pudo entrar a la sala');
-    msg('menuMsg', '');
+    msg('menuMsg', '');socket.emit('autoSwitch',store.get('garra-auto')!==false);
     history.replaceState(null, '', '#' + res.code);
   }
 
@@ -190,7 +190,7 @@
     netUI();
     if (!rejoin) return msg('menuMsg', '');
     socket.emit('join', { ...rejoin, cid, profile }, res => {
-      if (res && res.ok) return msg('menuMsg', '');
+      if (res && res.ok) {socket.emit('autoSwitch',store.get('garra-auto')!==false);return msg('menuMsg', '');}
       rejoin = null;
       msg('menuMsg', 'La sala ya no existe. Creá otra o entrá con otro código.');
     });
@@ -230,8 +230,12 @@
     ctx.font='700 5.5px "Chakra Petch", sans-serif';for(const p of list)p.labelWidth=ctx.measureText(p.name).width+5;
     roster = new Map(list.map(p => [p.id, p]));
     const me = list.find(p => p.sid === socket.id);
-    if ((me ? me.id : 0) !== myPid) leadW = 0; // cambió el jugador controlado: la predicción entra de a poco
+    if ((me ? me.id : 0) !== myPid) {
+      leadX=leadY=leadW=0;predictor.reset();
+      predictor.input(bits&(DIRS|B.SPRINT),performance.now()-rttEst);
+    }
     myPid = me ? me.id : 0;
+    $('controlled').textContent=me?`CONTROL #${me.num} ${me.attributes?.name||me.name}`:'';
   });
 
   function receiveSnapshot(s) {
@@ -267,7 +271,7 @@
   function predictMe(view,now,dt){
     const last=snaps[snaps.length-1],prev=snaps[snaps.length-2],info=roster.get(myPid),me=myPid&&row(view,myPid);
     if(!me)return;
-    const p=prev&&info&&info.kind==='field'&&roomInfo&&!roomInfo.paused&&info.pace&&last.s==='play'&&view.state==='play'
+    const p=prev&&info&&info.kind==='field'&&roomInfo&&!roomInfo.paused&&info.pace&&last.t>=(info.controlTick||0)&&last.s==='play'&&view.state==='play'
       ?predictor.reconcile(last,prev,myPid,(last.t+netClock.offset)*TICK_MS-rttEst,now,info.pace,W,H,!!pitch.wall):null;
     if(p){leadX=p.x-me.x;leadY=p.y-me.y;leadW=Math.min(1,leadW+dt/.15);me.face=p.face;me.speed=Math.min(7.5,Math.hypot(p.vx,p.vy));}
     else leadW=Math.max(0,leadW-dt/.15);
@@ -323,6 +327,9 @@
   $('lobbyPitch').onchange = () => { const i = +$('lobbyPitch').value; socket.emit('settings', { pitch: i, mode: PITCHES[i].mode }); };
   $('lobbyMode').onchange = () => socket.emit('settings', { mode: +$('lobbyMode').value });
   $('lobbyMinutes').onchange = () => socket.emit('settings', { minutes: +$('lobbyMinutes').value });
+  for(const id of ['myAutoSwitch','pauseAutoSwitch'])$(id).onchange=()=>{
+    const on=$(id).checked;store.set('garra-auto',on);socket.emit('autoSwitch',on);
+  };
   $('lobbySwap').onchange = () => socket.emit('settings', { swap: $('lobbySwap').checked });
   for (const t of [0, 1]) {
     const sel = $('teamSel' + t);
@@ -372,26 +379,29 @@
     const isHost = r.host === socket.id;
     const me = r.members.find(m => m.id === socket.id);
     renderAttributes(r,me);
+    for(const id of ['myAutoSwitch','pauseAutoSwitch'])$(id).checked=me?.autoSwitch!==false;
     for (const t of [0, 1]) {
       const ul = $('list' + t);
       ul.textContent = '';
       const mem = r.members.filter(m => m.team === t);
+      $('teamCount'+t).textContent=`${mem.length} jugador${mem.length===1?'':'es'} · ${Math.max(0,r.mode-mem.length)} CPU`;
       mem.forEach((m, i) => {
         const li = document.createElement('li');
         const num = document.createElement('span');
         num.className = 'num'; num.textContent = m.num;
-        const name = document.createElement('span');
+        const name = document.createElement('span');name.className='member-name';
         name.textContent = m.name + (m.id === socket.id ? ' (tú)' : '') + (i >= r.mode ? ' · suplente' : '');
-        const role=document.createElement('small');role.textContent=A.build(m.archetype||A.slot(TEAMS[r.teams[t]].code,i)).name;
+        const role=document.createElement('small');role.className='member-role';role.textContent=A.build(m.archetype||A.slot(TEAMS[r.teams[t]].code,i)).name;
         li.append(num, name,role);
-        if (m.id === r.host) { const h = document.createElement('span'); h.className = 'host'; h.textContent = '★ ANFITRIÓN'; li.append(h); }
+        if (m.id === r.host) { const h = document.createElement('span'); h.className = 'host'; h.textContent = '★';h.title='Anfitrión';h.setAttribute('aria-label','Anfitrión'); li.append(h); }
         if (m.id === socket.id) li.classList.add('me');
         ul.append(li);
       });
       for (let i = mem.length; i < r.mode; i++) {
         const li = document.createElement('li');
         li.className = 'bot';
-        li.textContent = 'CPU · '+A.build(A.slot(TEAMS[r.teams[t]].code,i)).name;
+        const badge=document.createElement('span'),role=document.createElement('span');
+        badge.className='bot-mark';badge.textContent='CPU';role.className='member-name';role.textContent=A.build(A.slot(TEAMS[r.teams[t]].code,i)).name;li.append(badge,role);
         ul.append(li);
       }
     }
@@ -399,15 +409,15 @@
       const k = teamKit(t), tm = TEAMS[r.teams[t]];
       $('teamSel' + t).value = r.teams[t];
       $('teamSel' + t).disabled = !isHost && !(me && me.team === t); // cada uno elige la de su equipo
-      $('teamName' + t).textContent = (t ? 'VISITANTE · ' : 'LOCAL · ') + tm.name.toUpperCase();
-      $('teamCard' + t).style.background = `linear-gradient(160deg, ${k.c1} 0%, #10131c 80%)`;
+      $('teamName' + t).textContent = tm.name;
+      $('teamCard'+t).style.setProperty('--side-c1',k.c1);
+      $('teamCard'+t).style.setProperty('--side-ink',ink(k.c1));
       $('tn' + t).textContent = tm.code;
       $('tn' + t).style.background = k.c1;
       $('tn' + t).style.color = ink(k.c1);
       const s=document.documentElement.style;s.setProperty('--team-'+t+'-c1',k.c1);s.setProperty('--team-'+t+'-ink',ink(k.c1));
       s.setProperty(t?'--blue':'--red',k.c1);
-      $('teamCard'+t).style.borderColor=k.c1;
-      $('teamName'+t).style.color=ink(k.c1);
+
     }
     for (const btn of document.querySelectorAll('.joinTeam')) {
       const t = +btn.dataset.team;
@@ -423,7 +433,7 @@
     $('lobbyMode').disabled = $('lobbyPitch').disabled = $('lobbyMinutes').disabled = $('lobbySwap').disabled = !isHost;
     $('btnStart').style.display = isHost ? '' : 'none';
     if (!$('lobbyMsg').textContent.startsWith('¡Enlace')) {
-      msg('lobbyMsg', isHost ? 'Los huecos vacíos los juega la CPU. ¡Dale a jugar cuando quieras!' : 'Esperando a que el anfitrión inicie el partido…');
+      msg('lobbyMsg', isHost ? 'La CPU completa los lugares libres.' : 'Esperando a que el anfitrión inicie el partido…');
     }
     drawKit();
   }
@@ -754,7 +764,7 @@
       const r = 11 + Math.sin(t / 90) * 2;
       ctx.strokeStyle = '#7cf3ff'; ctx.lineWidth = 1.6;
       ctx.beginPath(); ctx.ellipse(p.x, p.y, r, r * 0.7, 0, 0, Math.PI * 2); ctx.stroke();
-    } else if (p.id === v.pt && v.owner === myPid) { // a quién irá tu pase si lo sueltas ahora
+    } else if (p.id === v.pt && v.owner === myPid) { // posible destinatario del pase asistido
       ctx.strokeStyle = 'rgba(255,255,255,0.75)'; ctx.lineWidth = 1;
       ctx.setLineDash(DASH_SHORT); ctx.lineDashOffset = -t / 60;
       ctx.beginPath(); ctx.ellipse(p.x, p.y, 11, 7.7, 0, 0, Math.PI * 2); ctx.stroke();
@@ -840,12 +850,15 @@
       ctx.globalAlpha=C.envelope(age,q.max,2,10);ctx.fillStyle=q.c;ctx.fillRect(q.x,q.y-q.z*K,1.5,1.5);
     }particles.length=n;ctx.restore();
   }
-  function floater(text,id,x,y){const f=floaterPool.take();if(!f)return;f.text=text;f.id=id;f.x=x;f.y=y;f.born=eventTick;floaters.push(f);}
+  function floater(text,id,x,y){
+    const old=id&&floaters.find(f=>f.id===id&&eventTick-f.born>=0&&eventTick-f.born<18);
+    const f=old||floaterPool.take();if(!f)return;f.text=text;f.id=id;f.x=x;f.y=y;f.born=eventTick;if(!old)floaters.push(f);
+  }
   function drawFloaters(v){
-    let n=0;ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='400 8px "Bungee", sans-serif';
-    for(const f of floaters){const age=v.t-f.born;if(age<0){floaters[n++]=f;continue;}if(age>=80){floaterPool.release(f);continue;}floaters[n++]=f;
-      const p=f.id?v.byId.get(f.id):null,x=p?p.x:f.x,y=p?p.y:f.y,ty=-44-age*.12;if(x===undefined)continue;
-      ctx.save();ctx.translate(x,y);ctx.scale(1,1/TILT);ctx.globalAlpha=C.envelope(age,80,3,25)*(p?.alpha??1);ctx.lineWidth=2.4;ctx.strokeStyle='#000';ctx.strokeText(f.text,0,ty);ctx.fillStyle='#ffd23f';ctx.fillText(f.text,0,ty);ctx.restore();
+    let n=0;ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='400 5.5px "Bungee", sans-serif';
+    for(const f of floaters){const age=v.t-f.born;if(age<0){floaters[n++]=f;continue;}if(age>=54){floaterPool.release(f);continue;}floaters[n++]=f;
+      const p=f.id?v.byId.get(f.id):null,x=p?p.x:f.x,y=p?p.y:f.y,ty=-38-age*.12;if(x===undefined)continue;
+      ctx.save();ctx.translate(x,y);ctx.scale(1,1/TILT);ctx.globalAlpha=C.envelope(age,54,3,18)*(p?.alpha??1);ctx.lineWidth=1.5;ctx.strokeStyle='#000';ctx.strokeText(f.text,0,ty);ctx.fillStyle='#ffd23f';ctx.fillText(f.text,0,ty);ctx.restore();
     }floaters.length=n;
   }
   function spawnConfetti(team){
@@ -1051,11 +1064,11 @@
         ctx.fill();
         ctx.save();
         ctx.translate(gp.x, gp.y); ctx.scale(1, 1 / TILT);
-        ctx.font = '400 6px "Bungee", sans-serif';
+        ctx.font = '400 4.5px "Bungee", sans-serif';
         ctx.globalAlpha = 0.6 + 0.4 * Math.sin(visualTime / 150);
         ctx.lineWidth = 2; ctx.strokeStyle = '#000';
-        ctx.strokeText('¡SACÁ! S · W · A · D', 0, -38);
-        ctx.fillStyle = '#ffd23f'; ctx.fillText('¡SACÁ! S · W · A · D', 0, -38);
+        ctx.strokeText('¡SACÁ! S · D', 0, -38);
+        ctx.fillStyle = '#ffd23f'; ctx.fillText('¡SACÁ! S · D', 0, -38);
         ctx.restore();
       }
     }
@@ -1082,10 +1095,10 @@
       if (call > 0.03 && v.state === 'play' && v.owner !== p.id) {
         ctx.save();
         const pulse = Math.sin(v.t * 0.2 + p.id);
-        ctx.translate(0, -64 - pulse * 1.5);
+        ctx.translate(0, -58 - pulse * 1.5);
         ctx.globalAlpha = call;
         const pop = 0.85 + call * 0.15;
-        ctx.scale(pop, pop);
+        ctx.scale(pop*.75, pop*.75);
         ctx.fillStyle = '#e9fcff'; ctx.strokeStyle = '#1c6675'; ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(-17, -7); ctx.lineTo(17, -7); ctx.quadraticCurveTo(21, -7, 21, -3);

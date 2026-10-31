@@ -52,7 +52,8 @@
   function motion(base,p){
     const f=p.fx;return {...base,run:base.run*f.speed,sprint:base.sprint*f.speed,
       gkRun:base.gkRun*f.speed,gkSprint:base.gkSprint*f.speed,
-      acc:base.acc*f.acceleration,ballAcc:base.ballAcc*f.acceleration,turn:base.turn*f.agility,ballTurn:base.ballTurn*f.agility,
+      acc:base.acc*f.acceleration,ballAcc:base.ballAcc*f.acceleration,
+      stopAcc:base.stopAcc*f.acceleration,ballStopAcc:base.ballStopAcc*f.acceleration,cutAcc:base.cutAcc*f.acceleration,ballCutAcc:base.ballCutAcc*f.acceleration,turn:base.turn*f.agility,ballTurn:base.ballTurn*f.agility,
       croqT:duration(base.croqT,f.croqueta),stepT:duration(base.stepT,f.bicicleta)};
   }
   const duration=(base,f)=>clamp(Math.round(base/f),Math.ceil(base/(1+LIMITS.spread)),Math.floor(base/(1-LIMITS.spread)));

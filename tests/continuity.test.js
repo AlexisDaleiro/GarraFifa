@@ -94,7 +94,7 @@ const pauses=(seed,every)=>{const r=rnd(seed),list=[];for(let t=2000;t<40000;t+=
 // Predicción del jugador propio: servidor simulado con la misma marcha (stepRun), inputs que suben con demora,
 // snapshots redondeados como snapshot() que bajan con demora. Se compara contra donde el servidor tendrá al
 // jugador cuando llegue el input enviado ahora; sin predicción esa distancia es el lag que se siente.
-{const P={run:2.125,sprint:2.76,tired:1.615,carry:.9,boost:1.35,charge:.6,acc:.12,ballAcc:.09,turn:.3,ballTurn:.12,reverseBrake:.78,reverseStop:.2};
+{const P={run:2.125,sprint:2.76,tired:1.615,carry:.9,boost:1.35,charge:.6,acc:.12,ballAcc:.09,turn:.3,ballTurn:.12,reverseBrake:.65,reverseStop:.2,stopAcc:.26,ballStopAcc:.23,cutAcc:.2,ballCutAcc:.17,lowSpeed:.65,lowTurn:1.3,sprintTurn:.65,sprintAcc:.85};
  const r1=v=>Math.round(v*10)/10;
  function play({up=40,down=40,jit=()=>0,jitUp=()=>0,stall=()=>null,frame=()=>1000/60,dur=20000,reconcile=false,bumps=false}){
   const r=rnd(3),fr=rnd(5),plan=t=>[8|16,4,1|8,2|4|16,0][Math.floor(t/700)%5];
@@ -122,7 +122,7 @@ const pauses=(seed,every)=>{const r=rnd(seed),list=[];for(let t=2000;t<40000;t+=
   return {err,mean:mean/n,lag:lag/n,jumps};
  }
  for(const [name,opts,limit] of [['40+40 ms',{},3],['80+80 ms con jitter de bajada',{up:80,down:80,jit:expo(25)},6],['celular 18 fps y pausas',{up:70,down:70,frame:()=>55,stall:pauses(9,3000)},8],['jitter de subida (inevitable: el servidor aplica tarde)',{up:80,down:80,jitUp:expo(25)},20]]){
-  const r=play(opts);
+  const r=play({...opts,reconcile:true});
   assert(r.err<limit,`predicción ${name}: error ${r.err.toFixed(2)}`);
   assert(r.lag>r.mean*4,`predicción ${name}: no mejora el lag (${r.lag.toFixed(1)} vs ${r.mean.toFixed(1)})`);
   if(!opts.stall&&!opts.jitUp)assert.equal(r.jumps,0,`predicción ${name}: ${r.jumps} saltos`);

@@ -58,17 +58,23 @@
     return c;
   }
   const row=(s,id)=>{if(!s)return null;for(let i=0;i<s.p.length;i++)if(s.p[i][0]===id)return s.p[i];return null;};
-  // Marcha 'run' de updatePlayer (server.js) para un humano de campo, sin choques ni pelota.
-  // P: constantes PACE que manda el servidor. El --selftest del servidor compara las dos trayectorias.
+  // Misma respuesta de dirección en simulación y predicción; sin choques ni reposiciones.
+  function steer(s,x,y,P,ball,sprint,speed,turnRate=0){
+    const l=Math.hypot(x,y);if(l){x/=l;y/=l;}
+    const v=Math.hypot(s.vx,s.vy),dot=l&&v?(s.vx*x+s.vy*y)/v:1;
+    const slow=v<P.run*(P.lowSpeed??0),base=ball?P.ballAcc:P.acc;
+    let acc=!l?(ball?P.ballStopAcc:P.stopAcc)??base:slow||dot<.7?(ball?P.ballCutAcc:P.cutAcc)??base:base;
+    if(sprint&&!slow)acc*=P.sprintAcc??1;
+    if(l&&dot<0&&v>Math.max(P.reverseStop,P.run*(P.lowSpeed??0))){s.vx*=P.reverseBrake;s.vy*=P.reverseBrake;}
+    else{s.vx+=(x*speed-s.vx)*acc;s.vy+=(y*speed-s.vy)*acc;}
+    if(l){const r=turnRate||(ball?P.ballTurn:P.turn)*(slow?(P.lowTurn??1):sprint?(P.sprintTurn??1):1);
+      const f=s.face+clamp(angle(s.face,Math.atan2(y,x)),-r,r);s.face=Math.atan2(Math.sin(f),Math.cos(f));}
+    return s;
+  }
   function stepRun(s,bits,P){
-    let x=(bits&8?1:0)-(bits&4?1:0),y=(bits&2?1:0)-(bits&1?1:0);const l=Math.hypot(x,y);if(l){x/=l;y/=l;}
-    let speed=P.run;
-    if((bits&16)&&l)speed=P.sprint;
-    s.stamina=100;s.tired=false;
-    if(s.ball)speed*=P.carry;if(s.boost)speed*=P.boost;
-    if(l&&s.vx*x+s.vy*y<0&&Math.hypot(s.vx,s.vy)>P.reverseStop){s.vx*=P.reverseBrake;s.vy*=P.reverseBrake;}
-    else{const acc=s.ball?P.ballAcc:P.acc;s.vx+=(x*speed-s.vx)*acc;s.vy+=(y*speed-s.vy)*acc;}
-    if(l){const r=s.ball?P.ballTurn:P.turn,f=s.face+clamp(angle(s.face,Math.atan2(y,x)),-r,r);s.face=Math.atan2(Math.sin(f),Math.cos(f));}
+    const x=(bits&8?1:0)-(bits&4?1:0),y=(bits&2?1:0)-(bits&1?1:0),sprint=!!(bits&16);
+    let speed=sprint?P.sprint:P.run;if(s.ball)speed*=P.carry;if(s.boost)speed*=P.boost;
+    s.stamina=100;s.tired=false;steer(s,x,y,P,s.ball,sprint,speed);
     s.x=clamp(s.x+s.vx,-30,s.w+30);s.y=clamp(s.y+s.vy,-30,s.h+30);
     if(s.wall){if(s.x<9||s.x>s.w-9){s.x=clamp(s.x,9,s.w-9);s.vx=0;}if(s.y<9||s.y>s.h-9){s.y=clamp(s.y,9,s.h-9);s.vy=0;}}
     return s;
@@ -237,6 +243,6 @@
       if(seen.has(key))return false;seen.add(key);order.push(key);if(order.length>limit)seen.delete(order.shift());return true;
     },reset(){seen.clear();order.length=0;}};
   }
-  const api={TICK,NET,clamp,alpha,ease,angle,turn,rotationAlpha,height,createClock,stepRun,createPredictor,createSampler,createPresenter,createCamera,createBlend,envelope,createPool,stepParticle,stepConfetti,createTrail,createEventGate};
+  const api={TICK,NET,clamp,alpha,ease,angle,turn,rotationAlpha,height,createClock,steer,stepRun,createPredictor,createSampler,createPresenter,createCamera,createBlend,envelope,createPool,stepParticle,stepConfetti,createTrail,createEventGate};
   root.FootballContinuity=api;if(typeof module!=='undefined')module.exports=api;
 })(typeof window==='undefined'?globalThis:window);

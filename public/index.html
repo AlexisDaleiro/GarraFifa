@@ -55,7 +55,7 @@
       <p class="hint">Jugá con el celular o la tablet en horizontal.</p>
       <ul>
         <li><b class="tk">Joystick</b> (abajo a la izquierda) Mover</li>
-        <li><b class="tk">PASE</b> Pase manual en la dirección elegida</li>
+        <li><b class="tk">PASE</b> Pase asistido: apuntá hacia un compañero</li>
         <li><b class="tk">TIRO</b> Tiro inmediato</li>
         <li><b class="tk">SPRINT</b> Correr</li>
         <li>Apuntá a la pared y usá <b class="tk">PASE</b> para jugar con el rebote</li>
@@ -68,9 +68,10 @@
     <h3>Controles</h3>
     <ul>
       <li><kbd>←↑↓→</kbd> Mover</li>
-      <li><kbd>S</kbd> Pase manual: apuntá con las flechas</li>
-      <li><kbd>D</kbd> Tiro inmediato en la dirección elegida</li>
+      <li><kbd>S</kbd> Pase asistido: apuntá hacia un compañero</li>
+      <li><kbd>D</kbd> Tiro asistido hacia el arco (inmediato)</li>
       <li><kbd>Q / E</kbd> Croqueta / bicicleta</li>
+      <li><kbd>C</kbd> Cambiar de jugador sin pelota (flechas eligen dirección)</li>
         <li><kbd>Espacio</kbd> Sprint</li>
       <li>Apuntá a la pared y usá <kbd>S</kbd> para jugar con el rebote</li>
       <li>Si la tiene el rival, <kbd>S</kbd> es barrida</li>
@@ -85,57 +86,57 @@
 <section id="lobby" class="screen">
   <header class="lobby-head">
     <div class="room-code">SALA <b id="roomCode">----</b></div>
-    <button id="btnCopy" class="btn small">Copiar código</button>
-    <button id="btnLeave" class="btn small ghost">Salir</button>
+    <div class="lobby-actions">
+      <button id="btnCopy" class="btn small">Copiar enlace</button>
+      <button id="btnLeave" class="btn small ghost">Salir</button>
+    </div>
   </header>
   <div class="lobby-grid">
-    <div id="teamCard0" class="team-card red">
-      <h2 id="teamName0">LOCAL</h2>
+    <section id="teamCard0" class="team-card red" aria-label="Equipo local">
+      <header class="team-heading"><span class="side-label">Local</span><h2 id="teamName0">LOCAL</h2><small id="teamCount0"></small></header>
       <p id="teamStyle0" class="team-style"></p>
       <ul id="list0" class="team-list"></ul>
-      <button class="btn joinTeam" data-team="0">Jugar en Rojo</button>
-    </div>
-    <div class="card custom">
-      <h3>Equipos</h3>
-      <canvas id="kitPreview" width="180" height="180" aria-label="Vista previa de la camiseta"></canvas>
-      <div class="custom-fields">
-        <label class="field">Dorsal <input id="num" type="number" min="1" max="99" value="10"></label>
-      </div>
-      <label class="field">Perfil de juego <select id="archetype"></select></label>
-      <section class="player-profile" aria-label="Estadísticas del jugador">
-        <h4 id="profileName"></h4>
+      <button class="btn joinTeam" data-team="0">Jugar de local</button>
+    </section>
+    <div class="card custom" aria-label="Configuración de la sala">
+      <div class="settings-heading"><h3>Prepará el partido</h3><p>Selecciones, cancha y tu jugador</p></div>
+      <section class="selection-settings" aria-label="Selecciones">
+        <label class="field">Local <select id="teamSel0"></select></label>
+        <label class="field">Visitante <select id="teamSel1"></select></label>
+      </section>
+      <section id="hostSettings" class="host-settings" aria-label="Opciones del partido">
+        <label class="field">Cancha <select id="lobbyPitch"></select></label>
+        <label class="field">Jugadores <select id="lobbyMode"></select></label>
+        <label class="field">Tiempo
+          <select id="lobbyMinutes"><option value="3">3 min</option><option value="5">5 min</option></select>
+        </label>
+        <label class="field check span-all"><input id="lobbySwap" type="checkbox" checked> Permitir cambio automático al recibir</label>
+      </section>
+      <section class="player-settings" aria-label="Tu jugador">
+        <canvas id="kitPreview" width="180" height="180" aria-label="Vista previa de la camiseta"></canvas>
+        <div class="player-fields">
+          <label class="field">Dorsal <input id="num" type="number" min="1" max="99" value="10"></label>
+          <label class="field">Perfil de juego <select id="archetype"></select></label>
+        </div>
+        <label class="field check span-all"><input id="myAutoSwitch" type="checkbox" checked> Mi cambio automático al recibir</label>
+      </section>
+      <details class="player-profile" aria-label="Estadísticas del jugador">
+        <summary>Estadísticas y rasgos <strong id="profileName"></strong></summary>
         <dl id="profileStats" class="profile-stats"></dl>
         <ul id="profileTraits" class="profile-traits"></ul>
         <small>Perfiles ficticios · 50 neutral · efectos hasta ±10 %</small>
-      </section>
-      <div class="host-settings">
-        <label class="field">Local <select id="teamSel0"></select></label>
-        <label class="field">Visitante <select id="teamSel1"></select></label>
-      </div>
-      <div id="hostSettings" class="host-settings">
-        <label class="field span-all">Cancha
-          <select id="lobbyPitch"></select>
-        </label>
-        <label class="field">Jugadores
-          <select id="lobbyMode"></select>
-        </label>
-        <label class="field">Tiempo
-          <select id="lobbyMinutes">
-            <option value="3">3 min</option>
-            <option value="5">5 min</option>
-          </select>
-        </label>
-        <label class="field check span-all"><input id="lobbySwap" type="checkbox" checked> Si sos el único de tu equipo, manejás al compañero CPU que tiene la pelota</label>
-      </div>
-      <button id="btnStart" class="btn primary big">¡A JUGAR!</button>
-      <p id="lobbyMsg" class="msg" role="status"></p>
+      </details>
+      <footer class="lobby-start">
+        <button id="btnStart" class="btn primary big">¡A JUGAR!</button>
+        <p id="lobbyMsg" class="msg" role="status"></p>
+      </footer>
     </div>
-    <div id="teamCard1" class="team-card blue">
-      <h2 id="teamName1">VISITANTE</h2>
+    <section id="teamCard1" class="team-card blue" aria-label="Equipo visitante">
+      <header class="team-heading"><span class="side-label">Visitante</span><h2 id="teamName1">VISITANTE</h2><small id="teamCount1"></small></header>
       <p id="teamStyle1" class="team-style"></p>
       <ul id="list1" class="team-list"></ul>
-      <button class="btn joinTeam" data-team="1">Jugar en Azul</button>
-    </div>
+      <button class="btn joinTeam" data-team="1">Jugar de visitante</button>
+    </section>
   </div>
 </section>
 
@@ -149,7 +150,7 @@
     <span id="sc1" class="goals">0</span>
     <span id="tn1" class="tname blue">VIS</span>
   </div>
-  <div class="code-tag">SALA <b id="hudCode">----</b> · <kbd>Esc</kbd> menú · <kbd>H</kbd> ayuda · <kbd>M</kbd> sonido</div>
+  <div class="code-tag">SALA <b id="hudCode">----</b> · <kbd>Esc</kbd> menú · <kbd>H</kbd> ayuda · <kbd>M</kbd> sonido<span id="controlled"></span></div>
   <canvas id="radar" width="200" height="128" aria-label="Radar"></canvas>
   <div id="banner" class="banner"><b></b><small></small></div>
   <div id="replayTag" class="replay-tag">● REPETICIÓN</div>
@@ -162,7 +163,8 @@
     </div>
     <div class="only-keys">
     <b>Controles</b>
-    <p>←↑↓→ mover · S pase · D tiro · Espacio sprint · Q croqueta · E bicicleta</p>
+    <p>←↑↓→ mover · S pase · D tiro · Espacio sprint · Q croqueta · E bicicleta · C cambiar jugador sin pelota</p>
+    <p>Apuntá hacia un compañero o el arco: la asistencia corrige el golpe dentro de un rango limitado. Las paredes siguen disponibles.</p>
     <p>Apuntá a la pared y pasá con S. Cualquiera puede agarrar el rebote, incluido el que pateó.</p>
     <p>Rival con la pelota: S barrida. Compañero con la pelota: S la pide. Si el pase ya viene hacia vos, S o D le pegan de primera.</p>
     </div>
@@ -190,6 +192,7 @@
   <div id="pauseMenu" class="pause card" role="dialog" aria-label="Menú de pausa">
     <h2>MENÚ</h2>
     <p id="pauseNote" class="hint"></p>
+    <label class="field check"><input id="pauseAutoSwitch" type="checkbox" checked> Cambio automático al compañero con pelota</label>
     <div class="pause-actions">
       <button id="btnResume" class="btn primary">Seguir jugando</button>
       <button id="btnPauseAll" class="btn">Pausar para todos</button>

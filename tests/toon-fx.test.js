@@ -42,3 +42,12 @@ fx.reset();assert.equal(fx.options({...p,st:'run'},info,110,'play').fall,null);
 const reused=fx.options(p,info,110,'play');assert.equal(fx.options(p,info,111,'play'),reused,'opciones reutilizadas por jugador');
 assert.equal(reused.fall.tick,110,'fallback down no reinicia su fase cada 30 ticks');
 console.log('toon-fx OK: seis variantes deterministas, duración y replay');
+
+{
+ const f=create(),p={id:1,st:'run',face:0},info={team:0};
+ f.ingest({type:'kick',id:1,tick:100,kind:'pass',face:.4,duration:12},{t:103});
+ assert.equal(f.options(p,info,99,'play').kick,null,'no anticipa pase');
+ assert.equal(f.options(p,info,105,'play').kick.face,.4);assert.equal(f.options(p,info,112,'play').kick,null,'termina seguimiento');
+ f.ingest({type:'recover',id:1,tick:120,duration:42},{t:130});assert.equal(f.options(p,info,140,'play').recover.duration,42);
+ assert.equal(f.options(p,info,162,'play').recover,null);
+}

@@ -45,12 +45,16 @@
     function options(p,info,tick,state){
       const key=p.id??'preview';let out=outputs.get(key);
       if(!out){out={fallback:{seed:p.id,duration:30,tick:0,dx:1,dy:0,power:.3},pose:{},down:false};outputs.set(key,out);}
-      let fall=null,hit=null,goal=null,post=null,shot=null,daze=null;
+      let fall=null,hit=null,goal=null,post=null,shot=null,daze=null,kick=null,slide=null,recover=null,skill=null;
       for(let i=events.length-1;i>=0;i--){const e=events[i],age=tick-e.tick;if(age<0)continue;
         if(!fall&&e.victim===p.id&&e.fall&&age<e.fall.duration+18)fall=e.fall;
         if(!hit&&e.type==='shoulder'&&(e.id===p.id||e.victim===p.id)&&age<24)hit=e;
         if(!post&&e.type==='post'&&e.keeper===p.id&&age<42)post=e;
         if(!daze&&e.faceHit===p.id&&age<45)daze=e;
+        if(!kick&&e.type==='kick'&&e.id===p.id&&age<(e.duration||20))kick=e;
+        if(!slide&&e.type==='slide'&&e.id===p.id&&age<(e.duration||18))slide=e;
+        if(!recover&&e.type==='recover'&&e.id===p.id&&age<e.duration)recover=e;
+        if(!skill&&e.type==='skill'&&e.id===p.id&&age<(e.duration||30))skill=e;
         if(!shot&&e.type==='shot'&&e.id===p.id&&age<25)shot=e;
         if(!goal&&e.type==='goal'&&age<420)goal=e;
       }
@@ -59,7 +63,7 @@
         if(!out.down||tick<out.fallback.tick){out.fallback.tick=tick;out.fallback.dx=Math.cos(p.face);out.fallback.dy=Math.sin(p.face);}
         fall=out.fallback;
       }
-      out.down=p.st==='down';out.tick=tick;out.fall=fall;out.hit=hit;out.post=post;out.shot=shot;out.daze=daze;out.goal=state==='goal'?goal:null;out.team=info.team;return out;
+      out.down=p.st==='down';out.tick=tick;out.fall=fall;out.hit=hit;out.post=post;out.shot=shot;out.kick=kick;out.slide=slide;out.recover=recover;out.skill=skill;out.daze=daze;out.goal=state==='goal'?goal:null;out.team=info.team;return out;
     }
     function reset(){events.length=0;outputs.clear();}
     function draw(g,p,a,fx){
@@ -85,12 +89,12 @@
       g.restore();
     }
     function drawComics(g,tick){
-      for(const e of events){const age=tick-e.tick;if(age<0||age>42)continue;
+      for(const e of events){const age=tick-e.tick;if(age<0||age>30)continue;
         const text=e.word;
         if(!text||!Number.isFinite(e.x)||!Number.isFinite(e.y))continue;
-        g.save();g.translate(e.x,e.y-32-age*.35);g.scale(1,1/.78);g.rotate(e.tilt);
-        const size=(.55+.65*Math.sin(Math.PI*clamp(age/12)/2));g.scale(size,size);g.globalAlpha=C.envelope(age,42,3,14);
-        g.font='900 italic 13px sans-serif';g.textAlign='center';g.lineWidth=3;g.strokeStyle='#342019';g.fillStyle=e.type==='post'?'#9ff8ff':'#ffe46b';g.strokeText(text,0,0);g.fillText(text,0,0);g.restore();
+        g.save();g.translate(e.x,e.y-26-age*.25);g.scale(1,1/.78);g.rotate(e.tilt);
+        const size=(.55+.5*Math.sin(Math.PI*clamp(age/12)/2));g.scale(size,size);g.globalAlpha=C.envelope(age,30,3,10);
+        g.font='900 italic 8.5px sans-serif';g.textAlign='center';g.lineWidth=1.6;g.strokeStyle='#342019';g.fillStyle=e.type==='post'?'#9ff8ff':'#ffe46b';g.strokeText(text,0,0);g.fillText(text,0,0);g.restore();
       }
     }
     return {ingest,options,draw,drawComics,reset};

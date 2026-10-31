@@ -1,5 +1,7 @@
 # Jugadores y selecciones
 
+Actualización: la dirección de pase y tiro ahora tiene asistencia limitada. Ver [asistencia y animaciones](asistencia-y-animaciones.md); las referencias a dirección manual describen la versión anterior.
+
 `public/attributes.js` centraliza las ocho estadísticas, seis rasgos, perfiles y estilos de selección.
 Son perfiles ficticios: no representan valoraciones oficiales de futbolistas ni selecciones reales.
 

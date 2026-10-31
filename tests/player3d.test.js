@@ -10,7 +10,7 @@ for(const [p,a,o,expected] of [
  [{st:'run',flags:4},{speed:2},{},'kick'],
  [{st:'run',flags:36},{speed:2},{},'pass'],
  [{st:'slide'},{speed:4},{},'slide'],
- [{st:'recover'},{speed:0},{},'slide'],
+ [{st:'recover'},{speed:0},{},'idle'],
  [{st:'dive'},{speed:2},{},'gk_dive'],
  [{st:'hold'},{speed:0},{},'idle'],
  [{st:'run'},{speed:0},{celebrate:true},'celebrate'],
@@ -66,6 +66,22 @@ assert.equal(jitterActor.current,'idle');assert.equal(jitterActor.action.resets,
 for(let i=0;i<30;i++)updateAction(jitterActor,{st:'run',flags:0},{speed:2.5},{},1/60);
 assert.equal(jitterActor.current,'jog');
 assert(fadeDuration('jog','kick')<fadeDuration('idle','jog'));
+// Golpes fechados: llegan incluso sin flag, se reactivan y arrancan en el contacto del clip.
+{
+ const make=()=>({actions:Object.fromEntries(CLIPS.map(name=>[name,new Action(clips[name])])),mixer:{update(){}},referenceSpeed:CONFIG.referenceSpeed});
+ const a=make(),p={st:'run',flags:0};
+ const fx={tick:101,kick:{tick:100,kind:'pass',face:.3}};
+ updateAction(a,p,{speed:0},{fx},1/60);assert.equal(a.current,'pass');
+ assert(Math.abs(a.action.time-(.8*.6+1/60))<1e-9,'fase de contacto + edad del evento');
+ const resets=a.action.resets;updateAction(a,p,{speed:0},{fx},1/60);assert.equal(a.action.resets,resets,'no repite evento');
+ updateAction(a,p,{speed:0},{fx:{tick:104,kick:{tick:104,kind:'pass'}}},1/60);assert.equal(a.action.resets,resets+1,'nuevo pase aunque nunca cayó el flag');
+ updateAction(a,p,{speed:2.4},{fx:{tick:111,kick:{tick:104,kind:'pass'}}},1/60);assert.equal(a.current,'jog','puede correr después del golpe');
+ assert.equal(selectClip({st:'recover',flags:4},{speed:0},{fx}),'idle','recuperación no repite golpe ni barrida');
+ const late=make();updateAction(late,p,{speed:0},{fx:{tick:108,kick:{tick:100,kind:'kick'}}},1/60);
+ assert(Math.abs(late.action.time-(.8*.5+8/60))<1e-9,'entrada tardía respeta fase');
+ const slide=make();updateAction(slide,{st:'slide',flags:0},{speed:4},{fx:{tick:100,slide:{tick:100,duration:18}}},1/60);
+ assert(Math.abs(slide.action.rate-.8/.3)<1e-9,'barrida acompaña la duración física');
+}
 // Atlas: un renderer y 22 mixers; geometría/texturas compartidas, materiales y esqueletos independientes.
 class V {constructor(x=0,y=0,z=0){Object.assign(this,{x,y,z});} set(x,y,z){Object.assign(this,{x,y,z});return this;}setScalar(v){return this.set(v,v,v);}}
 class Node {

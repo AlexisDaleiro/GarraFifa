@@ -7,7 +7,9 @@
   const ATLAS={columns:6,rows:4,tileW:72,tileH:80,base:20};
   const CROSSFADE = 0.15;
   const CLIPS = ['idle','jog','sprint','kick','pass','slide','gk_dive','celebrate'];
-  const RUNS=new Set(['jog','sprint']),GROUNDED=new Set(['slide','down','recover']),STILL=new Set(['hold','fake','fooled']);
+  const RUNS=new Set(['jog','sprint']),GROUNDED=new Set(['slide']),STILL=new Set(['hold','fake','fooled','recover']);
+  // Fases de contacto de los clips generados en tools/build_player_assets.py.
+  const CONTACT={kick:.5,pass:.6};
   const SUPPORT=new Set(['run','hold','fake','fooled','step']);
   const ONCE = new Set(['kick','pass','slide','gk_dive']);
   const SKINS = ['#edbd96','#d6a078','#b77b54','#754a35','#f4cfaa'];
@@ -21,8 +23,10 @@
     if(options.fx?.fall||p.st==='down') return 'idle';
     if(options.celebrate) return 'celebrate';
     if(p.st==='dive') return 'gk_dive';
+    if(p.st==='recover')return 'idle';
     if(GROUNDED.has(p.st)) return 'slide';
-    if(p.flags&4) return p.flags&32?'pass':'kick';
+    if(options.fx?.kick&&p.st==='run')return options.fx.kick.kind==='pass'?'pass':'kick';
+    if((p.flags&4)&&p.st==='run') return p.flags&32?'pass':'kick';
     if(STILL.has(p.st)||(anim.speed||0)<0.12) return 'idle';
     return (p.flags&2)||(anim.sprint||0)>0.5?'sprint':'jog';
   }
@@ -58,6 +62,9 @@
     if(actor.moving===undefined)actor.moving=raw>.20;
     else if(actor.moving?actor.filteredSpeed<.07:actor.filteredSpeed>.20)actor.moving=!actor.moving;
     let name=selectClip(p,anim,options);
+    const strike=options.fx?.kick,age=strike?(options.fx.tick-strike.tick):0;
+    const movingStrike=!!strike&&raw>.8&&age>(strike.kind==='pass'?5:8);
+    if(movingStrike&&['kick','pass'].includes(name))name=(p.flags&2)?'sprint':'jog';
     if(BASE.has(name)&&p.st==='run'&&!options.fx?.fall&&!options.fx?.goal&&!options.celebrate){
       const sprint=(anim.sprint??(p.flags&2?1:0));
       actor.fast=actor.fast?sprint>.35:sprint>.65;
@@ -65,13 +72,16 @@
     }
     if(actor.identity?.body.crutches&&BASE.has(name))name='idle';
     const force=options.fx?.fall||options.fx?.goal||p.st!=='run';
-    if(actor.current&&ONCE.has(actor.current)&&actor.action.isRunning()&&BASE.has(name)&&!force)name=actor.current;
+    if(actor.current&&ONCE.has(actor.current)&&actor.action.isRunning()&&BASE.has(name)&&!force&&!movingStrike)name=actor.current;
     if(actor.current&&BASE.has(name)&&BASE.has(actor.current)&&actor.clipAge<.18&&!force)name=actor.current;
-    const kick=!!(p.flags&4),retrigger=kick&&!actor.lastKick&&['kick','pass'].includes(name);actor.lastKick=kick;
+    const kick=!!(p.flags&4),stamp=strike?strike.tick+':'+strike.kind:null;
+    const retrigger=['kick','pass'].includes(name)&&(stamp?stamp!==actor.lastStrike:kick&&!actor.lastKick);
+    actor.lastKick=kick;if(stamp)actor.lastStrike=stamp;
     if(name!==actor.current||retrigger){
       const next=actor.actions[name];if(!next)throw new Error('Falta el clip '+name);
       const previous=actor.action,previousName=actor.current,duration=fadeDuration(previousName,name);
       next.reset().setEffectiveWeight(1).setEffectiveTimeScale(1).play();
+      if(strike&&CONTACT[name])next.time=Math.min(next.getClip().duration,CONTACT[name]*next.getClip().duration+Math.max(0,age)/60);
       if(previous&&previous!==next){
         if(RUNS.has(name)&&RUNS.has(previousName))next.time=(previous.time%previous.getClip().duration)/previous.getClip().duration*next.getClip().duration;
         next.crossFadeFrom(previous,duration,false);
@@ -82,7 +92,8 @@
       actor.current=name;actor.action=next;actor.clipAge=0;
     }
     const locomotion=name==='jog'||name==='sprint';
-    actor.action.setEffectiveTimeScale(locomotion?actor.filteredSpeed*60/actor.referenceSpeed[name]*CADENCE:1);
+    const rate=name==='slide'?actor.action.getClip().duration/((options.fx?.slide?.duration||18)/60):1;
+    actor.action.setEffectiveTimeScale(locomotion?actor.filteredSpeed*60/actor.referenceSpeed[name]*CADENCE:rate);
     actor.mixer.update(dt);
     if(actor.retiring){let n=0;for(let i=0;i<actor.retiringCount;i++){const fade=actor.retiring[i];if(fade.action===actor.action)continue;fade.left-=dt;if(fade.left<=0)fade.action.stop();else{const keep=actor.retiring[n++];keep.action=fade.action;keep.left=fade.left;}}actor.retiringCount=n;}
   }
@@ -331,10 +342,11 @@
         updateAction(actor,p,anim,options,delta);
         for(const [bone,s] of actor.bones) bone.scale.setScalar(s); // Después del mixer, por si un clip anima escala.
         if(actor.identity)bodyScales(actor);
-        const face=anim.moveFace===undefined||anim.speed<0.12?p.face:anim.moveFace;
-        const target=Math.PI/2-face;actor.heading=actor.heading===undefined?target:C.turn(actor.heading,target,delta,9);
+        const strike=options.fx?.kick;
+        const face=strike&&p.st==='run'&&options.fx.tick-strike.tick<8&&Number.isFinite(strike.face)?strike.face:anim.moveFace===undefined||anim.speed<0.12?p.face:anim.moveFace;
+        const target=Math.PI/2-face;actor.heading=actor.heading===undefined?target:C.turn(actor.heading,target,delta,strike?18:9);
         actor.object.rotation.y=actor.heading;
-        applyProcedural(actor,p,options);
+        applyProcedural(actor,p,options,delta);
         applyVariety(actor,p,anim,options);
         smoothPose(actor,delta);
         metrics.maxPoseStep=Math.max(metrics.maxPoseStep,actor.poseStep||0);
@@ -386,7 +398,7 @@
     bend(actor,'thigh_r',-.3-moving*.2);bend(actor,'calf_r',.8+moving*.25);
     bend(actor,'thigh_l',Math.sin(phase)*moving*.18);
   }
-  function applyProcedural(actor,p,options) {
+  function applyProcedural(actor,p,options,dt) {
     const f=options.fx?.fall,tick=options.fx?.tick||0,m=actor.motion;
     m.rotation.order='YXZ';m.rotation.x=m.rotation.y=m.rotation.z=0;m.position.set(0,0,0);m.scale.setScalar(1);
     actor.visual.x=actor.visual.y=0;actor.object.position.y=actor.baseY;
@@ -394,22 +406,36 @@
     if(options.fx?.goal){applyCelebration(actor,p,options);return;}
     if(!f){
       const tick=options.fx?.tick||0,shot=options.fx?.shot;
-      if(actor.skillState!==p.st){actor.skillState=p.st;actor.skillAt=tick;}
-      if(p.st==='croq'||p.st==='step'){
-        const duration=actor.info.pace?.[p.st==='croq'?'croqT':'stepT']||(p.st==='croq'?22:30);
-        const t=clamp((tick-actor.skillAt)/duration,0,1),w=Math.sin(t*Math.PI),cycle=t*Math.PI*2;
+      const active=p.st==='croq'||p.st==='step';
+      if(actor.skillState!==p.st||tick<(actor.skillAt||0)){
+        actor.skillState=p.st;
+        if(active){actor.skillKind=p.st;actor.skillAt=options.fx?.skill?.kind===p.st?options.fx.skill.tick:tick;}
+      }
+      actor.skillWeight=(actor.skillWeight||0)+((active?1:0)-(actor.skillWeight||0))*C.alpha(dt,.05);
+      if(actor.skillKind&&actor.skillWeight>.005){
+        const kind=actor.skillKind,duration=actor.info.pace?.[kind==='croq'?'croqT':'stepT']||(kind==='croq'?22:30);
+        if(active)actor.skillPhase=clamp((tick-actor.skillAt)/duration,0,1);
+        const t=actor.skillPhase||0,w=Math.sin(t*Math.PI)*actor.skillWeight,cycle=t*Math.PI*2;
         m.rotation.z=Math.sin(cycle)*.13*w;
         bend(actor,'upperarm_l',0,-.3*w);bend(actor,'upperarm_r',0,.3*w);
-        if(p.st==='step'){
+        if(kind==='step'){
           poseBend(actor,'thigh_l',-.6*Math.sin(cycle)*w,0,.5*Math.cos(cycle)*w);
           bend(actor,'calf_l',.5*(1+Math.sin(cycle))*w);
         }else{poseBend(actor,'thigh_r',-.25*w,0,-.45*w);bend(actor,'calf_r',.3*w);}
       }
-      const jump=p.st==='rainbow'?Math.sin((p.stT||0)*.15)*3:shot?Math.sin(clamp((tick-shot.tick)/25,0,1)*Math.PI)*3:0;
-      const sy=1+Math.max(0,jump)*.06;m.position.y=Math.max(0,jump);m.scale.set(1/Math.sqrt(sy),sy,1/Math.sqrt(sy));
+      if(p.st==='recover'){
+        if(actor.recoverState!==p.st||tick<(actor.recoverAt||0))actor.recoverAt=tick;
+        const e=options.fx?.recover,age=tick-(e?.tick??actor.recoverAt),duration=e?.duration||22;
+        const w=1-C.ease(age/duration);m.position.y=-4*w;m.rotation.x=-.3*w;
+        bend(actor,'thigh_l',-.45*w);bend(actor,'thigh_r',-.45*w);bend(actor,'calf_l',.65*w);bend(actor,'calf_r',.65*w);
+      }
+      actor.recoverState=p.st;
+      const jump=p.st==='rainbow'?Math.sin((p.stT||0)*.15)*3:shot?.kind==='cabeza'?Math.sin(clamp((tick-shot.tick)/25,0,1)*Math.PI)*3:0;
+      const sy=1+Math.max(0,jump)*.06;m.position.y+=Math.max(0,jump);m.scale.set(1/Math.sqrt(sy),sy,1/Math.sqrt(sy));
       applyReaction(actor,p,options);
       return;
     }
+    actor.skillWeight=0;
     const pose=FX.fallPose(f,tick,actor.fallPose),age=tick-f.tick;
     const recovery=age>f.duration?1-clamp((age-f.duration)/18,0,1):1;
     // El centro de giro queda en la cintura, para apoyar el cuerpo en el césped.
@@ -588,5 +614,5 @@
     dispose(){backend?.dispose();backend=null;loading=null;failure=null;lastDraw=null;},
   };
   root.FootballPlayer3D=api;
-  if(typeof module!=='undefined') module.exports={FootballPlayer3D:api,selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CROSSFADE,CLIPS,CONFIG,CADENCE,ATLAS,fadeDuration};
+  if(typeof module!=='undefined') module.exports={FootballPlayer3D:api,selectClip,materialRole,palette,updateAction,createBackend,inPlace,validate,CROSSFADE,CLIPS,CONFIG,CADENCE,ATLAS,fadeDuration,CONTACT};
 })(typeof module!=='undefined'?module.exports:window);

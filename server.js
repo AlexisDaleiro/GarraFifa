@@ -5,8 +5,9 @@ const path = require('path');
 const { Server } = require('socket.io');
 const { TEAMS } = require('./public/teams.js');
 const { PITCHES, MODES, pitchGeom } = require('./public/pitches.js');
-const { NET } = require('./public/continuity.js');
+const { NET, steer } = require('./public/continuity.js');
 const { FootballAttributes: A } = require('./public/attributes.js');
+const { FootballAssist: ASSIST } = require('./public/assist.js');
 
 const app = express();
 app.use(express.static(path.join(__dirname, 'public')));
@@ -30,7 +31,13 @@ const PACE = {
   run: 2.125, gkRun: 2.21, sprint: 2.76, gkSprint: 2.64,
   carry: 0.9, boost: 1.35, // modificadores de marcha
   acc: 0.12, ballAcc: 0.09, turn: 0.3, ballTurn: 0.12,
-  reverseBrake: 0.78, reverseStop: 0.2, // frena antes de invertir la marcha
+  reverseBrake: 0.65, reverseStop: 0.2, // frena antes de invertir la marcha
+  stopAcc: .26, ballStopAcc: .23, cutAcc: .2, ballCutAcc: .17,
+  lowSpeed: .65, lowTurn: 1.3, sprintTurn: .65, sprintAcc: .85,
+  switchT: 18, manualGuard: 120, switchRange: 420, switchRecent: 90,
+  skillCommit: 6, stepCommit: 8, firstTouchT: 10, contactPush: 2.5,
+  actionBufferT: 6, oneTwoT: 150, // encadenar al recuperarse y ofrecer devolución
+  aiPlanT: 8, supportBack: 90, supportWide: 85, supportRun: 140, contain: 24, separation: 34,
   roll: 0.98704, air: 0.99568, // 1 - nuevo = 0.72 * (1 - anterior): conserva alcance
   passEnd: 2.16, passT: 210,
   punt: 6.48,
@@ -44,9 +51,10 @@ const PACE = {
 };
 
 // PC: PASE, TIRO, SPRINT y dos regates. Los botones anteriores conservan sus bits.
-const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, PASS: 128, CROQ: 256, STEP: 512, SHOOT: 1024 };
+const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, SWITCH: 32, PASS: 128, CROQ: 256, STEP: 512, SHOOT: 1024 };
 const DIRS = B.UP | B.DOWN | B.LEFT | B.RIGHT;
-const INPUT_MASK = DIRS | B.SPRINT | B.PASS | B.SHOOT | B.CROQ | B.STEP;
+const MOVE_MASK = DIRS | B.SPRINT;
+const INPUT_MASK = MOVE_MASK | B.SWITCH | B.PASS | B.SHOOT | B.CROQ | B.STEP;
 const ST = { run: 0, slide: 1, recover: 2, down: 3, spin: 4, croq: 5, step: 6, fake: 7, rainbow: 8, fooled: 9, hold: 10, dive: 11 };
 // Formaciones en coordenadas del estadio (1000x640); setHome las escala a la cancha.
 const FORMATIONS = {
@@ -99,7 +107,7 @@ function newRoom(hostSid, mode, minutes, pitch = 0) {
   const room = {
     code: makeCode(), host: hostSid, mode, minutes, pitch, members: new Map(), state: 'lobby',
     players: [], ball: newBall(), score: [0, 0], timeLeft: 0, tick: 0, sp: null,
-    goalT: 0, kickTeam: 0, teams: [0, 1], events: [], nextId: 1, acc: 0, swap: true,
+    goalT: 0, kickTeam: 0, teams: [0, 1], events: [], nextId: 1, acc: 0, swap: true, controls: new Map(), plans: [],
   };
   rooms.set(room.code, room);
   return room;
@@ -119,7 +127,7 @@ function makePlayer(room, team, kind, prof, sid, slot = 0) {
     attributes, pace:A.motion(MOVE,attributes),
     x: CX, y: CY, vx: 0, vy: 0, face: team === 0 ? 0 : Math.PI, st: 'run', stT: 0, stamina: 100, tired: false,
     sprinting: false, charging: false, charge: 0, queued: null, queuedT: 0, cool: 0, touchCool: 0, boostT: 0, kickT: 0,
-    callT: 0, callCool: 0, protectT: 0, skillCool: 0,
+    callT: 0, callCool: 0, protectT: 0, skillCool: 0, controlTick: 0, oneTwoT: 0,
     slideClean: false, lastDir: { x: 0, y: 0 },
     input: 0, pressed: 0, released: 0, aiDir: null, aiHold: 0, home: { x: CX, y: CY },
   };
@@ -145,17 +153,63 @@ function buildRoster(room) {
   }
 }
 
-// Único humano de su equipo (ej. 1v1 con equipos de 5): el control pasa al compañero CPU que recibe la pelota,
-// también en saques. El nombre viaja con el control; el dorsal queda en cada jugador.
+function controlState(room, sid) {
+  let c=room.controls.get(sid);
+  if(!c){c={bits:0,next:0,manualUntil:0,recent:[]};room.controls.set(sid,c);}
+  return c;
+}
+
+// Cambia el mando, nunca el cuerpo: conserva velocidad, estados y atributos de ambos.
+function transferControl(room, h, next, bits, manual) {
+  if(!h.sid||next.sid||next.team!==h.team||next.kind!=='field')return false;
+  const sid=h.sid,c=controlState(room,sid),name=h.name;
+  for(const p of [h,next])Object.assign(p,{input:0,pressed:0,released:0,aiDir:null,aiHold:0,queued:null,queuedT:0,callT:0});
+  Object.assign(h,{sid:null,name:'CPU'});
+  Object.assign(next,{sid,name,input:bits&MOVE_MASK,controlTick:room.tick+(manual?1:0)});
+  c.next=room.tick+PACE.switchT;c.recent.push(h.id);if(c.recent.length>3)c.recent.shift();
+  if(manual)c.manualUntil=room.tick+PACE.manualGuard;
+  room.plans=[];emitRoster(room);return true;
+}
+
+function switchPlayer(room, h, bits) {
+  const owner=room.ball.owner,c=controlState(room,h.sid);
+  if(room.state!=='play'||room.paused||room.tick<c.next||owner?.team===h.team)return false;
+  const d=dirFromBits(bits),tx=owner?owner.x:clamp(room.ball.x+room.ball.vx*8,PR,W-PR),ty=owner?owner.y:clamp(room.ball.y+room.ball.vy*8,PR,H-PR);
+  let choices=room.players.filter(p=>p.team===h.team&&!p.sid&&p.kind==='field'&&p.st==='run');
+  if(!choices.length)return false;
+  // No obliga a saltar lejos: la dirección decide sólo entre compañeros cercanos a la acción.
+  const nearest=Math.min(...choices.map(p=>dist(p.x,p.y,tx,ty)));
+  choices=choices.filter(p=>dist(p.x,p.y,tx,ty)<=nearest+PACE.switchRange);
+  const dot=p=>((p.x-h.x)*d.x+(p.y-h.y)*d.y)/(dist(p.x,p.y,h.x,h.y)||1);
+  if(d.x||d.y){const aimed=choices.filter(p=>dot(p)>.15);if(aimed.length)choices=aimed;}
+  let best=null,score=Infinity;
+  for(const p of choices){
+    const side=h.team===0?1:-1,goalSide=(tx-p.x)*side>0;
+    const recent=c.recent.includes(p.id)?PACE.switchRecent:0;
+    const v=dist(p.x,p.y,tx,ty)+dist(p.x,p.y,h.x,h.y)*.15-(goalSide?24:0)-dot(p)*90+recent;
+    if(v<score){best=p;score=v;}
+  }
+  return best&&transferControl(room,h,best,bits,true);
+}
+
+function playerInput(room,sid,bits) {
+  if(!Number.isInteger(bits))return;
+  const p=room.players.find(q=>q.sid===sid);if(!p)return;
+  bits&=INPUT_MASK;const c=controlState(room,sid),pressed=bits&~c.bits,released=c.bits&~bits;c.bits=bits;
+  if((pressed&B.SWITCH)&&switchPlayer(room,p,bits))return;
+  p.pressed|=pressed;p.released|=released;p.input=bits&~B.SWITCH;
+}
+
+// Automático optativo por persona y por sala; respeta la elección manual reciente.
 function autoSwitch(room) {
   const o = room.ball.owner;
   if (!o || o.sid || o.kind !== 'field') return;
   let h = null;
   for (const p of room.players) if (p.sid && p.team === o.team) { if (h) return; h = p; }
   if (!h || h.kind !== 'field') return;
-  Object.assign(o, { sid: h.sid, name: h.name, input: h.input, pressed: 0, released: 0, aiDir: null, aiHold: 0 });
-  Object.assign(h, { sid: null, name: 'CPU', input: 0, pressed: 0, released: 0, aiDir: null, aiHold: 0 });
-  emitRoster(room);
+  const c=controlState(room,h.sid),m=room.members.get(h.sid);
+  if(!room.swap||m?.autoSwitch===false||room.tick<c.manualUntil)return;
+  transferControl(room,h,o,c.bits||h.input,false);
 }
 
 // Cada jugador elige la selección de su equipo; el anfitrión, las dos. Pedir la del rival las intercambia.
@@ -193,7 +247,7 @@ function claimBot(room, sid) {
 
 function emitEv(room, ev) {
   ev={tick:room.tick,...ev};room.events.push(ev);
-  if(ev.fall||['goal','shoulder','post','shot'].includes(ev.type)||ev.faceHit){
+  if(ev.fall||['goal','shoulder','post','shot','kick','recover','skill'].includes(ev.type)||ev.faceHit){
     let history=visualHistory.get(room);
     if(!history){history=[];visualHistory.set(room,history);}
     history.push(ev);while(history.length&&(room.tick-history[0].tick>600||history.length>512))history.shift();
@@ -208,8 +262,8 @@ function fallFX(room, s, o, duration) {
 }
 
 // Constantes de marcha que el cliente usa para predecir su propio jugador (continuity.stepRun).
-const MOVE = (({ run, sprint, gkRun, gkSprint, carry, boost, acc, ballAcc, turn, ballTurn, reverseBrake, reverseStop, croqT, stepT }) =>
-  ({ run, sprint, gkRun, gkSprint, carry, boost, acc, ballAcc, turn, ballTurn, reverseBrake, reverseStop, croqT, stepT }))(PACE);
+const MOVE = (({ run, sprint, gkRun, gkSprint, carry, boost, acc, ballAcc, turn, ballTurn, reverseBrake, reverseStop, croqT, stepT, stopAcc, ballStopAcc, cutAcc, ballCutAcc, lowSpeed, lowTurn, sprintTurn, sprintAcc }) =>
+  ({ run, sprint, gkRun, gkSprint, carry, boost, acc, ballAcc, turn, ballTurn, reverseBrake, reverseStop, croqT, stepT, stopAcc, ballStopAcc, cutAcc, ballCutAcc, lowSpeed, lowTurn, sprintTurn, sprintAcc }))(PACE);
 function roomInfo(r) {
   return {
     code: r.code, host: r.host, mode: r.mode, minutes: r.minutes, pitch: r.pitch, paused: !!r.paused, state: r.state, score: r.score, teams: r.teams, swap: r.swap, pace: MOVE,
@@ -219,14 +273,14 @@ function roomInfo(r) {
 function broadcastRoom(r) { io.to(r.code).emit('room', roomInfo(r)); }
 function emitRoster(r) {
   io.to(r.code).emit('roster', r.players.map(p => ({
-    id: p.id, team: p.team, kind: p.kind, name: p.name, num: p.num, sid: p.sid, attributes:p.attributes, pace:p.pace,
+    id: p.id, team: p.team, kind: p.kind, name: p.name, num: p.num, sid: p.sid, attributes:p.attributes, pace:p.pace, controlTick:p.controlTick,
   })),visualHistory.get(r)||[]);
 }
 
 // ---------- Flujo del partido ----------
 function startMatch(room) {
   usePitch(room);
-  room.paused = false;
+  room.paused = false;room.controls.clear();room.plans=[];room.assistPreview=null;
   visualHistory.delete(room);visualContacts.delete(room);
   buildRoster(room);
   room.score = [0, 0];
@@ -250,7 +304,7 @@ function endMatch(room) {
 function resetMotion(p) {
   p.vx = p.vy = 0; p.st = 'run'; p.stT = 0; p.charging = false; p.charge = 0;
   p.queued = null; p.boostT = 0; p.aiHold = 0; p.callT = 0; p.callCool = 0;
-  p.protectT = 0; p.skillCool = 0;
+  p.protectT = 0; p.skillCool = 0;p.skillAge=0;p.oneTwoT=0;
 }
 
 function kickoff(room, team) {
@@ -358,14 +412,14 @@ function quickGoalKick(room, team) {
   emitEv(room, { type: 'setpiece', kind: 'goalkick', label: '¡SACÁ Y JUGÁ!', team });
 }
 
-function kickBall(room, p, vx, vy, vz, spin) {
+function kickBall(room, p, vx, vy, vz, spin, kind='kick') {
   const b = room.ball;
   b.owner = null; b.vx = vx; b.vy = vy; b.vz = vz; b.spin = spin || 0;
   b.lastTeam = p.team; b.lastPlayer = p.id; b.kicker = p.id;
   room.pass = null;
-  p.touchCool = 14; p.kickT = 10; p.kickKind = 'kick'; p.charging = false; p.charge = 0; p.queued = null; p.callT = 0;
+  p.touchCool = 14; p.kickT = 10; p.kickKind = kind; p.charging = false; p.charge = 0; p.queued = null; p.callT = 0;
   p.protectT = 0;
-  emitEv(room, { type: 'kick', p: r1(Math.hypot(vx, vy) + Math.abs(vz)), x: r1(b.x), y: r1(b.y) });
+  emitEv(room, { type: 'kick', id:p.id,kind,face:Math.atan2(vy,vx),duration:kind==='pass'?12:20,p: r1(Math.hypot(vx, vy) + Math.abs(vz)), x: r1(b.x), y: r1(b.y) });
 }
 
 // Sólo la IA elige a quién pasar; el golpe respeta su dirección, igual que el humano.
@@ -402,11 +456,17 @@ function linePenalty(room, p, m) {
   return pen;
 }
 
-// Dirección manual; ningún perfil elige destinatario ni añade dispersión.
-function doPass(room, p, aim) {
-  const v=PACE.manualPass*p.attributes.fx.pass;
-  kickBall(room,p,Math.cos(aim)*v,Math.sin(aim)*v,0,0);
-  p.kickKind='pass';room.pass=null;
+// Corrección limitada en el golpe. Misma regla para humano y CPU; pared libre.
+function passAim(room,p,aim){
+  return ASSIST.pass(room.players,p,room.ball,aim,PACE.manualPass*p.attributes.fx.pass,PACE.roll,W,H,!!PITCHES[room.pitch].wall);
+}
+function doPass(room,p,aim){
+  const v=PACE.manualPass*p.attributes.fx.pass,target=passAim(room,p,aim);
+  kickBall(room,p,Math.cos(target.aim)*v,Math.sin(target.aim)*v,0,0,'pass');
+  p.oneTwoT=target.to?PACE.oneTwoT:0;
+  p.oneTwoX=clamp(p.x+(p.team===0?1:-1)*PACE.supportRun,30,W-30);
+  p.oneTwoY=clamp(p.y+(p.y<CY?-1:1)*PACE.separation,30,H-30);
+  if(target.to)emitEv(room,{type:'pass',id:p.id,to:target.to,x:r1(room.ball.x),y:r1(room.ball.y)});
 }
 
 // Dónde corta el receptor la trayectoria del pase (en el aire: donde cae).
@@ -421,9 +481,10 @@ function receivePoint(room, p) {
 const isReceiver = (room, p) => !!room.pass && room.pass.to === p.id && !room.ball.owner;
 
 function doShoot(room, p, header = false) {
-  const d=p.lastDir,aim=d.x||d.y?Math.atan2(d.y,d.x):p.face;
+  const d=p.lastDir,manual=d.x||d.y?Math.atan2(d.y,d.x):p.face;
+  const {aim}=ASSIST.shot(p,room.ball,manual,W,GOAL_TOP,GOAL_BOT);
   const speed=PACE.manualShot*p.attributes.fx.shot*(header?.75:1);
-  kickBall(room,p,Math.cos(aim)*speed,Math.sin(aim)*speed,header?1.2:0,0);
+  kickBall(room,p,Math.cos(aim)*speed,Math.sin(aim)*speed,header?1.2:0,0,'shot');
   emitEv(room,{type:'shot',id:p.id,kind:header?'cabeza':'raso'});
 }
 
@@ -474,7 +535,10 @@ function endState(room, p) {
   if (prev === 'slide') { p.st = 'recover'; p.stT = p.slideClean ? PACE.recoverHit : PACE.recoverMiss; }
   else if (prev === 'dive') { p.st = 'recover'; p.stT = 22; }
   else if (prev === 'hold' && room.ball.owner === p) gkDistribute(room, p);
+  if(p.st==='recover')emitEv(room,{type:'recover',id:p.id,duration:p.stT});
 }
+
+const hasQueued=p=>!!p.queued&&p.queuedT>0;
 
 // ---------- Jugador ----------
 function updatePlayer(room, p) {
@@ -487,6 +551,19 @@ function updatePlayer(room, p) {
   if (frozen) { pr = 0; rel = 0; }
   let d = p.aiDir || dirFromBits(held);
   p.lastDir = d;
+  // Sólo conserva el golpe cerca del final de una recuperación y con balón al alcance.
+  if(!frozen&&p.st==='recover'&&p.stT<=PACE.actionBufferT&&(pr&(B.PASS|B.SHOOT))&&
+    (b.owner===p||!b.owner&&dist(p.x,p.y,b.x,b.y)<40)){
+    p.queued=pr&B.SHOOT?'shoot':'pass';p.queuedT=PACE.firstTouchT;
+  }
+  const skill=p.st==='croq'||p.st==='step';
+  if(skill)p.skillAge=(p.skillAge||0)+1;
+  const commit=p.st==='croq'?PACE.skillCommit:PACE.stepCommit;
+  if(skill&&(pr&(B.PASS|B.SHOOT))){p.queued=pr&B.SHOOT?'shoot':'pass';p.queuedT=PACE.firstTouchT;}
+  if(skill&&p.skillAge>=commit&&(d.x||d.y||p.queued)){
+    p.st='run';p.stT=0;
+    if(hasQueued(p)){pr|=p.queued==='shoot'?B.SHOOT:B.PASS;p.queued=null;p.queuedT=0;}
+  }
   if (p.stT > 0 && --p.stT === 0) endState(room, p);
   if (p.touchCool > 0) p.touchCool--;
   if (p.protectT > 0) p.protectT--;
@@ -496,6 +573,7 @@ function updatePlayer(room, p) {
   if (p.kickT > 0) p.kickT--;
   if (p.callT > 0) p.callT--;
   if (p.callCool > 0) p.callCool--;
+  if(p.oneTwoT>0){p.oneTwoT--;if(b.owner&&b.owner.team!==p.team)p.oneTwoT=0;}
   if (p.queuedT > 0 && --p.queuedT === 0) p.queued = null;
 
   const hasBall = b.owner === p;
@@ -513,14 +591,7 @@ function updatePlayer(room, p) {
   switch (p.st) {
     case 'run': {
       if (frozen) { p.vx *= 0.8; p.vy *= 0.8; break; }
-      const acc = hasBall ? P.ballAcc : P.acc;
-      if (moving && p.vx * d.x + p.vy * d.y < 0 && Math.hypot(p.vx, p.vy) > PACE.reverseStop) {
-        p.vx *= PACE.reverseBrake; p.vy *= PACE.reverseBrake;
-      } else {
-        p.vx += (d.x * speed - p.vx) * acc;
-        p.vy += (d.y * speed - p.vy) * acc;
-      }
-      if (moving) p.face = turn(p.face, Math.atan2(d.y, d.x), isTaker ? 1 : hasBall ? P.ballTurn : P.turn);
+      steer(p,d.x,d.y,P,hasBall,p.sprinting,speed,isTaker?1:0);
       break;
     }
     case 'croq': p.vx *= .94; p.vy *= .94; break;
@@ -542,6 +613,10 @@ function updatePlayer(room, p) {
   if (isTaker) { p.x = sp.x - Math.cos(p.face) * 14; p.y = sp.y - Math.sin(p.face) * 14; p.vx = p.vy = 0; }
 
   if (frozen || p.st !== 'run') { if (!hasBall) p.charging = false; return; }
+  if(hasBall&&hasQueued(p)){
+    if(!(pr&(B.PASS|B.SHOOT)))pr|=p.queued==='shoot'?B.SHOOT:B.PASS;
+    p.queued=null;p.queuedT=0;
+  }
   const aim = moving ? Math.atan2(d.y, d.x) : p.face;
 
   // Barrida: PASE mientras el rival tiene la pelota. Con el stick apunta; sin stick va hacia el rival.
@@ -550,18 +625,18 @@ function updatePlayer(room, p) {
     const ta = moving ? aim : Math.atan2(carrier.y - p.y, carrier.x - p.x);
     p.st = 'slide'; p.stT = PACE.slideT; p.cool = PACE.slideCool; p.slideClean = false; p.face = ta;
     p.vx = Math.cos(ta) * PACE.slide; p.vy = Math.sin(ta) * PACE.slide;
-    emitEv(room, { type: 'slide', id: p.id });
+    emitEv(room, { type: 'slide', id: p.id, duration:PACE.slideT });
     return;
   }
 
   if (hasBall) {
     if(p.kind==='field'&&room.state==='play'&&p.skillCool===0&&(pr&(B.CROQ|B.STEP))){
       const croq=!!(pr&B.CROQ);
-      p.st=croq?'croq':'step';p.stT=croq?p.pace.croqT:p.pace.stepT;
+      p.skillAge=0;p.st=croq?'croq':'step';p.stT=croq?p.pace.croqT:p.pace.stepT;
       p.skillCool=PACE.skillCool;
       // Croqueta lateral corta; bicicleta corporal sin forzar la reacción rival.
       if(croq){const side=Math.sin(aim-p.face)<0?-1:1;p.vx=-Math.sin(p.face)*PACE.croqSpeed*side;p.vy=Math.cos(p.face)*PACE.croqSpeed*side;}
-      emitEv(room,{type:'skill',id:p.id,kind:p.st});return;
+      emitEv(room,{type:'skill',id:p.id,kind:p.st,duration:p.stT});return;
     }
     if(pr&B.SHOOT)return doShoot(room,p);
     if (pr & B.PASS) return doPass(room, p, aim, 'auto');
@@ -575,10 +650,10 @@ function updatePlayer(room, p) {
     }
     // Pedirla a un compañero no prepara un pase involuntario cuando la recibís.
     // Se mantiene la jugada de primera si el pase ya viene hacia vos o el balón está al alcance.
-    const firstTouch = !p.sid || (!b.owner && (isReceiver(room, p) || dist(p.x, p.y, b.x, b.y) < 40));
-    if (passPressed && !firstTouch) { p.queued = null; p.queuedT = 0; }
-    const q = pr & B.SHOOT ? 'shoot' : firstTouch && passPressed ? 'pass' : null;
-    if (q) { p.queued = q; p.queuedT = 18; }
+    const firstTouch = !b.owner && (isReceiver(room,p)||dist(p.x,p.y,b.x,b.y)<40);
+    if ((pr&(B.PASS|B.SHOOT))&&!firstTouch) { p.queued=null;p.queuedT=0; }
+    const q=firstTouch?(pr&B.SHOOT?'shoot':passPressed?'pass':null):null;
+    if(q){p.queued=q;p.queuedT=PACE.firstTouchT;}
   }
 }
 
@@ -606,6 +681,68 @@ function aiPassTo(p, m, btn) {
   p.pressed |= btn;
 }
 
+// Un perseguidor, apoyos escalonados y cobertura. Se recalcula a 7.5 Hz o al cambiar posesión.
+function teamPlan(room,team){
+  const b=room.ball,owner=b.owner,old=room.plans[team],key=owner?.id||0;
+  if(old&&old.key===key&&room.tick-old.tick<PACE.aiPlanT)return old;
+  const side=team===0?1:-1,players=room.players.filter(p=>p.team===team&&p.kind==='field');
+  const plan={key,tick:room.tick,chaser:0,targets:new Map()},teamHas=owner?.team===team;
+  const bx=clamp(owner?owner.x:b.x+b.vx*8,30,W-30),by=clamp(owner?owner.y:b.y+b.vy*8,30,H-30);
+  if(teamHas){
+    const mates=players.filter(p=>p!==owner&&!p.sid).sort((a,c)=>(a.home.x-c.home.x)*side||a.id-c.id);
+    let slot=0;
+    mates.forEach(p=>{
+      let x,y,role;
+      const i=p.oneTwoT>0?-1:slot++;
+      if(i<0){x=p.oneTwoX;y=p.oneTwoY;role='devolución';}
+      else if(i===0){x=bx-side*PACE.supportBack;y=by+(by<CY?1:-1)*45;role='apoyo';}
+      else if(i<=2){x=bx+side*55;y=by+(i===1?(by<CY?1:-1):(by<CY?-1:1))*PACE.supportWide*roomStyle(room,team).width;role='ancho';}
+      else if(i===3){x=bx+side*PACE.supportRun;y=CY+(p.home.y<CY?-1:1)*55;role='ruptura';}
+      else{x=bx-side*(110+(i-4)*24);y=p.home.y;role='cobertura';}
+      if(owner.kind==='gk')x=bx+side*(85+i*35);
+      let best=null,score=Infinity;
+      for(const off of [0,-30,30]){
+        const spot={x:clamp(x,30,W-30),y:clamp(y+off,30,H-30)};
+        let cost=linePenalty(room,owner,spot)*100+dist(p.x,p.y,spot.x,spot.y)*.08+Math.abs(off)*.2;
+        for(const q of players)if(q!==p&&q!==owner)cost+=Math.max(0,PACE.separation-dist(spot.x,spot.y,q.x,q.y))*2;
+        for(const q of plan.targets.values())cost+=Math.max(0,60-dist(spot.x,spot.y,q.x,q.y))*2;
+        if(cost<score){best=spot;score=cost;}
+      }
+      plan.targets.set(p.id,{...best,role});
+    });
+  }else{
+    const eligible=players.filter(p=>p.st==='run');
+    eligible.sort((a,c)=>dist(a.x,a.y,bx,by)-dist(c.x,c.y,bx,by)||a.id-c.id);
+    plan.chaser=eligible[0]?.id||0;
+    const threats=room.players.filter(p=>p.team!==team&&p.kind==='field'&&p!==owner).sort((a,c)=>(a.x-c.x)*side||a.id-c.id);
+    let i=0;
+    for(const p of players){
+      if(p.id===plan.chaser){
+        const gap=owner?PACE.contain:0;plan.targets.set(p.id,{x:bx-side*gap,y:by,role:'presión'});continue;
+      }
+      const mark=threats[i++%Math.max(1,threats.length)];
+      const x=mark?Math.min(bx*side-45,mark.x*side-25)*side:bx-side*95;
+      const y=mark?mark.y:CY+(p.home.y-CY)*roomStyle(room,team).width;
+      plan.targets.set(p.id,{x:clamp(x,30,W-30),y:clamp(y,30,H-30),role:'cobertura'});
+    }
+  }
+  room.plans[team]=plan;return plan;
+}
+const roomStyle=(room,team)=>A.style(TEAMS[room.teams[team]].code);
+function passingOption(room,p){
+  const side=p.team===0?1:-1,max=PACE.manualPass*p.attributes.fx.pass/(1-PACE.roll)*.8;
+  let best=null,score=-Infinity;
+  for(const m of room.players){
+    if(m===p||m.team!==p.team||m.kind!=='field'||m.st==='down')continue;
+    const d=dist(p.x,p.y,m.x,m.y),blocked=linePenalty(room,p,m);
+    if(d<35||d>max||blocked>.4)continue;
+    const space=nearestOpp(room,m).d;
+    const v=(m.callT>0?.9:0)+Math.min(space,90)/100-Math.abs(d-110)/250+clamp((m.x-p.x)*side/300,-.25,.3);
+    if(v>score){best=m;score=v;}
+  }
+  return best;
+}
+
 function fieldAI(room, p) {
   const b = room.ball, sp = room.sp, style=A.style(TEAMS[room.teams[p.team]].code);
   const side = p.team === 0 ? 1 : -1, goalX = p.team === 0 ? W : 0;
@@ -619,7 +756,7 @@ function fieldAI(room, p) {
     if (sp.t < 55) return;
     const dGoal = dist(p.x, p.y, goalX, CY);
     if (sp.type === 'penalty' || (sp.type === 'free' && dGoal < 300)) return aiShoot(p, side);
-    const m = findMate(room, p, Math.atan2(CY - p.y, goalX - p.x)) || findMate(room, p, p.face);
+    const m = passingOption(room,p);
     if (m) return aiPassTo(p, m, B.PASS);
     p.aiDir = { x: side, y: 0 };
     p.pressed |= B.PASS;
@@ -634,44 +771,35 @@ function fieldAI(room, p) {
     }
     if(near&&nd<45&&p.skillCool===0&&Math.random()<.018*style.dribble){p.pressed|=p.id%2?B.CROQ:B.STEP;}
     if (Math.random() < (nd < PACE.aiPressure ? PACE.aiPassPressed : PACE.aiPass)*style.pass) {
-      const m = findMate(room, p, Math.atan2(CY - p.y, goalX - p.x)) || findMate(room, p, p.face);
-      if (m && linePenalty(room, p, m) < 0.45) return aiPassTo(p, m, B.PASS);
+      const m = passingOption(room,p);
+      if (m) return aiPassTo(p,m,B.PASS);
     }
     tx = goalX - side * 40;
     ty = CY + (p.y < CY ? -30 : 30);
     if (near && nd < 80) ty += (p.y > near.y ? 1 : -1) * PACE.aiDodge;
     sprint = nd < PACE.aiCarrySprint;
-  } else if (isReceiver(room, p)) {
-    ({ x: tx, y: ty } = receivePoint(room, p));
-    sprint = dist(p.x, p.y, tx, ty) > PACE.aiReceiveSprint;
   } else {
-    const teamHas = b.owner && b.owner.team === p.team;
-    const px = b.owner ? b.owner.x : b.x + b.vx * 8, py = b.owner ? b.owner.y : b.y + b.vy * 8;
-    let chaser = null, cd = Infinity;
-    for (const m of room.players) {
-      if (m.team !== p.team || m.kind !== 'field') continue;
-      const d = dist(m.x, m.y, px, py);
-      if (d < cd) { cd = d; chaser = m; }
-    }
-    if (!teamHas && (chaser === p || dist(p.x, p.y, px, py) < 70)) {
-      tx = px; ty = py;
-      const dp = dist(p.x, p.y, px, py);
-      sprint = dp > PACE.aiChaseSprint/style.pressure;
-      if (b.owner && b.owner.team !== p.team && b.owner.kind === 'field') {
-        if (dp < 34 && p.cool <= 0 && room.state === 'play' && !tackleBehind(p, b.owner) && Math.random() < 0.03) p.pressed |= B.PASS;
-      } else if (!b.owner && b.z > 8 && dp < 50 && Math.random() < 0.2) {
-        p.pressed |= (b.x - CX) * side > 150 ? B.SHOOT : B.PASS;
-      }
-    } else {
-      const bx = b.owner ? b.owner.x : b.x;
-      tx = p.home.x + (bx - CX) * 0.6 + (teamHas ? side * 90 : 0);
-      ty = CY+(p.home.y-CY)*style.width + (b.y - CY) * 0.35;
-      tx = clamp(tx, 30, W - 30);
-      ty = clamp(ty, 30, H - 30);
+    const plan=teamPlan(room,p.team),target=plan.targets.get(p.id);
+    if(target){tx=target.x;ty=target.y;}
+    // El pasador ofrece otro ángulo en vez de perseguir su propio pase.
+    if(p.oneTwoT>0&&!b.owner&&b.kicker===p.id){tx=p.oneTwoX;ty=p.oneTwoY;}
+    const dp=dist(p.x,p.y,b.x,b.y);
+    sprint=dist(p.x,p.y,tx,ty)>PACE.aiChaseSprint/style.pressure;
+    if(plan.chaser===p.id&&b.owner&&b.owner.team!==p.team&&b.owner.kind==='field'&&dp<34&&p.cool<=0&&room.state==='play'&&!tackleBehind(p,b.owner)&&Math.random()<.025)p.pressed|=B.PASS;
+    // Sólo prepara primera cuando el balón se acerca y está a alcance del siguiente toque.
+    if(!b.owner&&dp<26&&(p.x-b.x)*b.vx+(p.y-b.y)*b.vy>0&&Math.random()<.06){
+      const mate=passingOption(room,p);if(mate)return aiPassTo(p,mate,B.PASS);
     }
   }
-  const dx = tx - p.x, dy = ty - p.y, dd = Math.hypot(dx, dy);
-  p.aiDir = dd > 6 ? { x: dx / dd, y: dy / dd } : { x: 0, y: 0 };
+  let dx=tx-p.x,dy=ty-p.y;const dd=Math.hypot(dx,dy);
+  if(dd>6){dx/=dd;dy/=dd;}else dx=dy=0;
+  // Separación al caminar: evita llegar amontonados al mismo apoyo.
+  for(const m of room.players){
+    if(m===p||m.team!==p.team||m.kind!=='field')continue;
+    const x=p.x-m.x,y=p.y-m.y,d=Math.hypot(x,y);
+    if(d>0&&d<PACE.separation){const w=(1-d/PACE.separation)*.9;dx+=x/d*w;dy+=y/d*w;}
+  }
+  const l=Math.hypot(dx,dy);p.aiDir=l?{x:dx/l,y:dy/l}:{x:0,y:0};
   if (sprint) p.input |= B.SPRINT;
 }
 
@@ -778,8 +906,8 @@ function checkGoalFrame(room, prevX) {
       if (b.x < 0 || b.x > W) return outOfPlay(room, 'line');
     } else {
       let hit = false;
-      if (b.x < BALL_R && b.vx < 0) { b.x = BALL_R * 2 - b.x; b.vx *= -PACE.wallBounce; hit = true; }
-      if (b.x > W - BALL_R && b.vx > 0) { b.x = (W - BALL_R) * 2 - b.x; b.vx *= -PACE.wallBounce; hit = true; }
+      if (!mouth && b.x < BALL_R && b.vx < 0) { b.x = BALL_R * 2 - b.x; b.vx *= -PACE.wallBounce; hit = true; }
+      if (!mouth && b.x > W - BALL_R && b.vx > 0) { b.x = (W - BALL_R) * 2 - b.x; b.vx *= -PACE.wallBounce; hit = true; }
       if (b.y < BALL_R && b.vy < 0) { b.y = BALL_R * 2 - b.y; b.vy *= -PACE.wallBounce; hit = true; }
       if (b.y > H - BALL_R && b.vy > 0) { b.y = (H - BALL_R) * 2 - b.y; b.vy *= -PACE.wallBounce; hit = true; }
       if (hit) { b.spin *= PACE.wallSpin; room.pass = null; } // rebote libre para cualquiera
@@ -802,6 +930,7 @@ function controlBall(room, p) {
   Object.assign(room.ball, { owner: p, x: p.x + Math.cos(p.face) * foot, y: p.y + Math.sin(p.face) * foot,
     z: 0, vx: p.vx, vy: p.vy, vz: 0, spin: 0, lastTeam: p.team, lastPlayer: p.id });
   p.protectT = PACE.protectT;
+  p.oneTwoT=0;
   room.pass = null;
 }
 
@@ -876,9 +1005,9 @@ function collidePlayers(room) {
   for (let i = 0; i < ps.length; i++) for (let j = i + 1; j < ps.length; j++) {
     const a = ps[i], c = ps[j];
     if (a.st === 'down' || c.st === 'down') continue;
-    const dx = c.x - a.x, dy = c.y - a.y, d = Math.hypot(dx, dy);
-    if (d >= PR * 2 || d === 0) continue;
-    const nx = dx / d, ny = dy / d, ov = PR * 2 - d;
+    const dx=c.x-a.x,dy=c.y-a.y,d=Math.hypot(dx,dy);
+    if(d>=PR*2)continue;
+    const nx=d?dx/d:(a.id<c.id?1:-1),ny=d?dy/d:0,ov=Math.min(PACE.contactPush,PR*2-d);
     const sa = Math.hypot(a.vx, a.vy), sc = Math.hypot(c.vx, c.vy);
     let contacts=visualContacts.get(room);
     if(!contacts){contacts=new Map();visualContacts.set(room,contacts);}
@@ -892,6 +1021,8 @@ function collidePlayers(room) {
     a.x -= nx * ov * wa; a.y -= ny * ov * wa;
     c.x += nx * ov * (1 - wa); c.y += ny * ov * (1 - wa);
     if (a.team !== c.team && room.state === 'play') shoulder(room, a, c, sa, sc);
+    const av=a.vx*nx+a.vy*ny,cv=c.vx*nx+c.vy*ny;
+    if(av>0){a.vx-=nx*av;a.vy-=ny*av;}if(cv<0){c.vx-=nx*cv;c.vy-=ny*cv;}
   }
 }
 
@@ -905,7 +1036,8 @@ function shoulder(room, a, c, sa, sc) {
   if (sch < 1) return;
   const dx=owner.x-ch.x,dy=owner.y-ch.y,l=Math.hypot(dx,dy)||1;
   if(tackleBehind(ch,owner)||(Math.cos(ch.face)*dx+Math.sin(ch.face)*dy)/l<.35)return;
-  const force=(sch-so+.3)*ch.attributes.fx.defense;
+  const closing=((ch.vx-owner.vx)*dx+(ch.vy-owner.vy)*dy)/l;
+  const force=(Math.max(0,closing)+.3)*ch.attributes.fx.defense;
   const resist=1.6*owner.attributes.fx.balance*(owner.sprinting?1:PACE.shield);
   if(force>resist){
     controlBall(room, ch);
@@ -1002,6 +1134,12 @@ function snapshot(room) {
         | (p.kickT > 0 && p.kickKind === 'pass' ? 32 : 0),
     ]),
   };
+  const owner=b.owner;
+  if(owner?.sid&&owner.kind==='field'){
+    const d=owner.lastDir,aim=d.x||d.y?Math.atan2(d.y,d.x):owner.face,c=room.assistPreview;
+    if(!c||c.id!==owner.id||Math.abs(c.aim-aim)>.01||room.tick-c.tick>=3)room.assistPreview={id:owner.id,aim,tick:room.tick,to:passAim(room,owner,aim).to};
+    if(room.assistPreview.to)s.pt=room.assistPreview.to;
+  }
   if (room.events.length) { s.e = room.events; room.events = []; }
   return s;
 }
@@ -1016,9 +1154,9 @@ io.on('connection', socket => {
     const r = room;
     room = null;
     socket.leave(r.code);
-    r.members.delete(socket.id);
+    r.members.delete(socket.id);r.controls.delete(socket.id);r.plans=[];
     const pl = r.players.find(p => p.sid === socket.id);
-    if (pl) { Object.assign(pl, { sid: null, name: 'CPU', input: 0, pressed: 0, released: 0 }); emitRoster(r); }
+    if (pl) { Object.assign(pl, { sid: null, name: 'CPU', input: 0, pressed: 0, released: 0,queued:null,queuedT:0,aiDir:null,aiHold:0 }); emitRoster(r); }
     if (!r.members.size) {
       if (keep) r.dropT = setTimeout(() => { if (!r.members.size) rooms.delete(r.code); }, ROOM_GRACE_MS);
       else rooms.delete(r.code);
@@ -1040,7 +1178,7 @@ io.on('connection', socket => {
     const counts = [0, 0];
     for (const m of r.members.values()) counts[m.team]++;
     const team = (pref === 0 || pref === 1) && counts[pref] < r.mode ? pref : counts[0] <= counts[1] ? 0 : 1;
-    r.members.set(socket.id, { ...cleanProfile(profile), team, cid });
+    r.members.set(socket.id, { ...cleanProfile(profile), team, cid, autoSwitch:true });
     if (r.state !== 'lobby') { claimBot(r, socket.id); emitRoster(r); }
     broadcastRoom(r);
   };
@@ -1112,7 +1250,7 @@ io.on('connection', socket => {
     if (!room || room.host !== socket.id || room.state === 'lobby' || room.state === 'ended') return;
     room.paused = !!on;
     // lo apretado durante la pausa no se ejecuta al volver
-    for (const p of room.players) { p.pressed = p.released = 0; }
+    for (const p of room.players) { p.pressed=p.released=0;p.queued=null;p.queuedT=0; }
     broadcastRoom(room);
   });
 
@@ -1124,14 +1262,10 @@ io.on('connection', socket => {
     broadcastRoom(room);
   });
 
-  socket.on('input', bits => {
-    if (!room || typeof bits !== 'number') return;
-    const p = room.players.find(q => q.sid === socket.id);
-    if (!p) return;
-    bits &= INPUT_MASK;
-    p.pressed |= bits & ~p.input;
-    p.released |= p.input & ~bits;
-    p.input = bits;
+  socket.on('input',bits=>{if(room)playerInput(room,socket.id,bits);});
+  socket.on('autoSwitch',on=>{
+    if(!room||typeof on!=='boolean')return;
+    const m=room.members.get(socket.id);if(!m)return;m.autoSwitch=on;broadcastRoom(room);
   });
 
   socket.on('lat', cb => { if (typeof cb === 'function') cb(); });
@@ -1148,15 +1282,36 @@ function selfTest() {
     try { Math.random = () => value; return fn(); }
     finally { Math.random = random; }
   }
-  // Tiro manual inmediato: sin carga, autoapuntado ni dispersión por atributos.
+  // Tiro inmediato: sin carga ni azar; asistencia acotada para todos los perfiles.
   for(const id of Object.keys(A.PROFILES))for(const aim of [0,.37,Math.PI,-Math.PI/2]){
     const r=newRoom('t',1,3);r.state='play';
     const p=fixture(r,0,'field',cleanProfile({archetype:id}),'a'),mate=fixture(r,0,'field',cleanProfile({}),'b');r.players=[p,mate];
     Object.assign(p,{x:300,y:CY,face:aim,lastDir:{x:0,y:0},pressed:B.SHOOT,input:B.SHOOT});controlBall(r,p);
     updatePlayer(r,p);assert.strictEqual(r.ball.owner,null,'tiro en la pulsación');
-    assert(Math.abs(normAng(Math.atan2(r.ball.vy,r.ball.vx)-aim))<1e-9,'dirección manual sin azar');
+    assert(Math.abs(normAng(Math.atan2(r.ball.vy,r.ball.vx)-aim))<=ASSIST.RULES.shotTurn+1e-9,'corrección de tiro limitada y sin azar');
     assert(Math.abs(Math.hypot(r.ball.vx,r.ball.vy)-PACE.manualShot*p.attributes.fx.shot)<1e-9);
     assert.strictEqual(p.charge,0);rooms.delete(r.code);
+  }
+  // Asistencia: punto de salida correcto; después sigue física libre, incluso si el receptor cambia.
+  {
+    const r=newRoom('t',2,3);r.state='play';r.timeLeft=1000;
+    const p=fixture(r,0,'field',cleanProfile({}),'a'),mate=fixture(r,0,'field',cleanProfile({}),'b');r.players=[p,mate];
+    Object.assign(p,{x:300,y:CY,face:0});Object.assign(mate,{x:480,y:CY+60});controlBall(r,p);
+    assert.equal(snapshot(r).pt,mate.id,'previsualiza destinatario');doPass(r,p,0);
+    const aim=Math.atan2(r.ball.vy,r.ball.vx);assert(aim>0&&aim<=ASSIST.RULES.passTurn);
+    const ev=r.events.find(e=>e.type==='kick');assert.equal(ev.id,p.id);assert.equal(ev.kind,'pass');assert.equal(ev.face,aim);
+    mate.y+=90;for(let i=0;i<5;i++)updateBall(r);
+    assert(Math.abs(Math.atan2(r.ball.vy,r.ball.vx)-aim)<1e-9,'sin teledirección después de salir');
+    Object.assign(p,{x:W-200,y:GOAL_TOP-60,face:0,lastDir:{x:1,y:0}});controlBall(r,p);doShoot(r,p);
+    for(let i=0;i<70&&!r.ball.inNet;i++)updateBall(r);
+    assert(r.ball.inNet,'tiro asistido entra entre postes sin arquero');rooms.delete(r.code);
+  }
+  // La boca del arco no es pared: ningún paso del integrador rebota antes de cruzar.
+  for(const side of [0,1])for(const speed of [4.3,6.4,9.648,10.6])for(const gap of [30,31,33,40]){
+    const r=newRoom('t',1,3);r.state='play';r.timeLeft=1000;
+    Object.assign(r.ball,{x:side?gap:W-gap,y:CY,vx:side?-speed:speed,vy:0,z:0});
+    for(let i=0;i<40&&!r.ball.inNet;i++)updateBall(r);
+    assert(r.ball.inNet,'boca libre en ambos arcos y velocidades');rooms.delete(r.code);
   }
   // 2) Barrida por detrás: posesión rival en el lugar, sin pausar en la calle.
   {
@@ -1191,11 +1346,11 @@ function selfTest() {
     assert.strictEqual(r.ball.owner, null, 'el arquero no sacó');
     rooms.delete(r.code);
   }
-  // Pase manual: mantiene dirección y velocidad con compañeros fuera de la línea.
+  // Pase libre sin destinatario elegible; velocidad individual intacta.
   for(const id of Object.keys(A.PROFILES))for(const aim of [0,.37,Math.PI,-Math.PI/2]){
     const r=newRoom('t',2,3);r.state='play';
     const p=fixture(r,0,'field',cleanProfile({archetype:id}),'a'),mate=fixture(r,0,'field',cleanProfile({}),'b');r.players=[p,mate];
-    Object.assign(p,{x:300,y:CY,face:aim});Object.assign(mate,{x:500,y:CY+90});controlBall(r,p);
+    Object.assign(p,{x:300,y:CY,face:aim});Object.assign(mate,{x:310,y:CY+5});controlBall(r,p);
     doPass(r,p,aim);assert.strictEqual(r.pass,null,'sin destinatario automático');
     assert(Math.abs(normAng(Math.atan2(r.ball.vy,r.ball.vx)-aim))<1e-9,'perfil no redirige');
     assert(Math.abs(Math.hypot(r.ball.vx,r.ball.vy)-PACE.manualPass*p.attributes.fx.pass)<1e-9);
@@ -1329,7 +1484,7 @@ function selfTest() {
     assert.strictEqual(p.protectT, 0);
     withRandom(0.002, () => shoulder(r, p, def, 0, 1.5));
     assert.strictEqual(r.ball.owner, p, 'sin sprint protege mejor');
-    p.sprinting = true;
+    p.sprinting = true;def.vx=-1.5;
     withRandom(0.002, () => shoulder(r, p, def, 0, 1.5));
     assert.strictEqual(r.ball.owner, def, 'con sprint queda expuesto');
     assert.strictEqual(def.protectT, 30, 'el nuevo dueño recibe protección');
@@ -1346,14 +1501,14 @@ function selfTest() {
     assert(p.vx > 0 && p.vx < PACE.run, 'primero pierde velocidad');
     let ticks = 1;
     while (p.vx >= 0 && ticks < 60) { updatePlayer(r, p); ticks++; }
-    assert(ticks > 5 && ticks < 60, 'no invierte de golpe ni queda trabado');
+    assert(ticks>=3&&ticks<12,'inversión progresiva sin quedar trabado');
     controlBall(r, p); p.face = 0; p.input = B.DOWN;
     updatePlayer(r, p);
-    assert(Math.abs(p.face - PACE.ballTurn) < 1e-9);
+    assert(p.face>0&&p.face<=p.pace.ballTurn*PACE.lowTurn+1e-9,'giro preciso a baja velocidad');
     r.ball.owner = null;
     for (const sid of ['a', null]) {
       resetMotion(p); p.x = 100; p.sid = sid; p.input = B.RIGHT | B.SPRINT; p.aiDir = null;
-      for (let i = 0; i < 60; i++) updatePlayer(r, p);
+      for (let i = 0; i < 90; i++) updatePlayer(r, p);
       assert(Math.abs(p.vx - PACE.sprint) < 0.002, 'misma velocidad de sprint');
     }
     rooms.delete(r.code);
@@ -1569,6 +1724,154 @@ function selfTest() {
     assert.equal(bot.sid,'a');assert.equal(bot.attributes,attributes);assert.equal(bot.pace,pace,'control no traslada estadísticas');
     assert.equal(human.attributes.id,'velocista');rooms.delete(r.code);
   }
+  // C defensiva: prioridad útil/direccional, exclusividad y flancos por conexión.
+  {
+    const r=newRoom('t',4,3);r.state='play';r.tick=100;
+    const h=fixture(r,0,'field',cleanProfile({name:'Ana'}),'a'),near=fixture(r,0,'field',cleanProfile({archetype:'defensor'}),null);
+    const up=fixture(r,0,'field',cleanProfile({} ),null),human=fixture(r,0,'field',cleanProfile({}),'b'),opp=fixture(r,1,'field',cleanProfile({}),'c'),gk=fixture(r,0,'gk',cleanProfile({}),null);
+    r.players=[h,near,up,human,opp,gk];
+    Object.assign(h,{x:100,y:200,vx:1,vy:.3,queued:'shoot',queuedT:9,pressed:B.SHOOT,st:'recover',stT:12});
+    Object.assign(near,{x:300,y:200,vx:-.4,vy:.7,queued:'pass',queuedT:8,pressed:B.PASS});
+    Object.assign(up,{x:290,y:80});Object.assign(human,{x:310,y:200});Object.assign(gk,{x:315,y:200});
+    Object.assign(opp,{x:325,y:200});controlBall(r,opp);
+    const attrs=near.attributes,pace=near.pace;
+    playerInput(r,'a',B.RIGHT|B.SPRINT|B.SWITCH|B.PASS|B.SHOOT);
+    assert.equal(near.sid,'a','elige CPU útil, no humano ni arquero');assert.equal(h.sid,null);
+    assert.equal(near.input,B.RIGHT|B.SPRINT);assert.equal(near.queued,null);assert.equal(h.queued,null);assert.equal(near.pressed,0);assert.equal(h.pressed,0);assert.equal(near.controlTick,r.tick+1,'no predice desde snapshot previo al cambio');
+    assert.equal(h.vx,1);assert.equal(h.st,'recover');assert.equal(h.stT,12);
+    assert.equal(near.vx,-.4);assert.equal(near.vy,.7);assert.equal(near.attributes,attrs);assert.equal(near.pace,pace);
+    assert.equal(r.players.filter(p=>p.sid==='a').length,1);
+    r.tick+=30;playerInput(r,'a',B.RIGHT|B.SPRINT|B.SWITCH|B.PASS|B.SHOOT);
+    assert.equal(near.sid,'a','mantener C no repite');
+    playerInput(r,'a',B.UP|B.SPRINT);playerInput(r,'a',B.UP|B.SPRINT|B.SWITCH);
+    assert.equal(up.sid,'a','la dirección prioriza al compañero arriba');assert.equal(up.input,B.UP|B.SPRINT);
+    playerInput(r,'a',0);playerInput(r,'a',B.SWITCH);assert.equal(up.sid,'a','cooldown corto');
+    r.tick+=PACE.switchT;controlBall(r,up);playerInput(r,'a',0);playerInput(r,'a',B.SWITCH);assert.equal(up.sid,'a','no cambia conduciendo');
+    r.paused=true;r.ball.owner=null;r.tick+=30;playerInput(r,'a',0);playerInput(r,'a',B.SWITCH);assert.equal(up.sid,'a','no cambia pausado');
+    rooms.delete(r.code);
+  }
+  // Elección manual protegida; opción individual y sala gobiernan el automático.
+  {
+    const r=newRoom('t',3,3);r.state='play';r.tick=100;r.members.set('a',{autoSwitch:true});
+    const h=fixture(r,0,'field',cleanProfile({}),'a'),mate=fixture(r,0,'field',cleanProfile({}),null),opp=fixture(r,1,'field',cleanProfile({}),'b');r.players=[h,mate,opp];
+    Object.assign(h,{x:100,y:100});Object.assign(mate,{x:300,y:CY});Object.assign(opp,{x:320,y:CY});controlBall(r,opp);
+    playerInput(r,'a',B.SWITCH);assert.equal(mate.sid,'a');controlBall(r,h);autoSwitch(r);assert.equal(mate.sid,'a');
+    r.tick+=PACE.manualGuard+1;r.members.get('a').autoSwitch=false;autoSwitch(r);assert.equal(mate.sid,'a');
+    r.members.get('a').autoSwitch=true;r.swap=false;autoSwitch(r);assert.equal(mate.sid,'a');
+    r.swap=true;autoSwitch(r);assert.equal(h.sid,'a');assert.equal(mate.queued,null);rooms.delete(r.code);
+  }
+  // Sprint diagonal sostenido, frenada y corte: mismas reglas para humanos y bots.
+  {
+    const Cn=require('./public/continuity'),P=A.motion(MOVE,A.build('neutral'));
+    for(const ball of [false,true]){
+      const st={x:200,y:200,vx:0,vy:0,face:0,ball,boost:false,w:10000,h:10000,wall:false};
+      for(let i=0;i<600;i++)Cn.stepRun(st,B.RIGHT|B.DOWN|B.SPRINT,P);
+      const speed=PACE.sprint*(ball?PACE.carry:1);assert(Math.abs(Math.hypot(st.vx,st.vy)-speed)<1e-6,'sin exceso diagonal ni agotamiento');
+      let stop=0;while(Math.hypot(st.vx,st.vy)>.1&&stop<60){Cn.stepRun(st,0,P);stop++;}
+      assert(stop<=13,'frenada permite cambiar el ritmo');
+      const slow={vx:.1,vy:0,face:0},fast={vx:speed,vy:0,face:0};
+      Cn.steer(slow,0,1,P,ball,false,speed);Cn.steer(fast,0,1,P,ball,true,speed);
+      assert(slow.face>fast.face,'giro más preciso caminando');
+    }
+    for(const [name,acc,stopAcc] of [['sin balón',PACE.acc,PACE.stopAcc],['con balón',PACE.ballAcc,PACE.ballStopAcc]]){
+      const measure=a=>{let v=PACE.sprint,x=0,n=0;while(v>.1){v*=1-a;x+=v;n++;}return `${n} ticks / ${x.toFixed(1)} px`;};
+      console.log(`frenada ${name}: ${measure(acc)} → ${measure(stopAcc)}`);
+    }
+  }
+  // Correr, frenar, evitar una entrada fallada y salir de croqueta con pase.
+  {
+    const r=newRoom('t',2,3);r.state='play';const p=fixture(r,0,'field',cleanProfile({}),'a'),def=fixture(r,1,'field',cleanProfile({}),'b');r.players=[p,def];
+    Object.assign(p,{x:220,y:CY,input:B.RIGHT|B.SPRINT});Object.assign(def,{x:500,y:CY+80});controlBall(r,p);
+    for(let i=0;i<45;i++)updatePlayer(r,p);assert(p.sprinting);p.input=0;
+    for(let i=0;i<12;i++)updatePlayer(r,p);assert(Math.hypot(p.vx,p.vy)<.12,'frena al soltar sprint');
+    p.pressed=B.CROQ;updatePlayer(r,p);p.pressed=B.PASS;updatePlayer(r,p);
+    Object.assign(def,{x:p.x,y:p.y+50,face:Math.PI,st:'slide',stT:PACE.slideT});
+    for(let i=0;i<PACE.skillCommit;i++){updatePlayer(r,p);checkSlides(r);}
+    assert.equal(r.ball.owner,null,'pase sale después del compromiso corto');assert.equal(p.kickKind,'pass');
+    for(let i=0;i<PACE.slideT;i++)updatePlayer(r,def);assert.equal(def.st,'recover');assert.equal(def.stT,PACE.recoverMiss);
+    rooms.delete(r.code);
+  }
+  // Recibir y pasar/tiro de primera, sin acciones remotas ni botones antiguos.
+  for(const action of [B.PASS,B.SHOOT])for(const sid of ['a',null]){
+    const r=newRoom('t',2,3);r.state='play';const p=fixture(r,0,'field',cleanProfile({}),sid);r.players=[p];Object.assign(p,{x:300,y:CY,face:0});
+    Object.assign(r.ball,{x:100,y:CY,vx:4});p.pressed=action;updatePlayer(r,p);assert.equal(p.queued,null,'no prepara acciones lejanas');
+    r.ball.x=p.x-25;p.pressed=action;p.input=B.RIGHT|action;updatePlayer(r,p);assert(p.queued);
+    r.ball.x=p.x-10;checkTouches(r);assert.equal(p.queued,null);assert.equal(r.ball.owner,null);assert(r.ball.vx>0);
+    p.touchCool=0;controlBall(r,p);updatePlayer(r,p);assert.equal(r.ball.owner,p,'mantener botón no repite');rooms.delete(r.code);
+  }
+  // Golpe al salir de recuperación: ventana corta, sin adelantarlo ni repetir al mantener.
+  for(const action of [B.PASS,B.SHOOT]){
+    const r=newRoom('t',2,3);r.state='play';const p=fixture(r,0,'field',cleanProfile({}),'a');r.players=[p];
+    Object.assign(p,{x:220,y:CY,face:0,st:'recover',stT:PACE.actionBufferT});controlBall(r,p);
+    p.pressed=action;p.input=action;updatePlayer(r,p);assert.equal(r.ball.owner,p,'el golpe espera a recuperarse');
+    assert(p.queued,'conserva una pulsación breve');
+    for(let i=1;i<PACE.actionBufferT;i++)updatePlayer(r,p);
+    assert.equal(p.st,'run');assert.equal(r.ball.owner,null);assert.equal(p.kickKind,action===B.PASS?'pass':'shot');
+    const kicks=r.events.filter(e=>e.type==='kick').length;updatePlayer(r,p);
+    assert.equal(r.events.filter(e=>e.type==='kick').length,kicks,'mantener no repite');
+    controlBall(r,p);Object.assign(p,{st:'recover',stT:PACE.actionBufferT+2,pressed:action});
+    for(let i=0;i<PACE.actionBufferT+2;i++)updatePlayer(r,p);
+    assert.equal(r.ball.owner,p,'una pulsación temprana no queda pendiente');
+    Object.assign(r.ball,{owner:null,x:p.x-10,y:p.y,z:0});Object.assign(p,{st:'recover',stT:3,touchCool:0,pressed:action});
+    updatePlayer(r,p);checkTouches(r);assert.equal(r.ball.owner,null,'no controla durante la recuperación');
+    for(let i=0;i<2;i++)updatePlayer(r,p);
+    const first=r.events.filter(e=>e.type==='kick').length;checkTouches(r);
+    assert.equal(r.events.filter(e=>e.type==='kick').length,first+1,'balón cercano de primera al recuperarse');
+    Object.assign(r.ball,{owner:null,x:p.x-100,y:p.y});Object.assign(p,{st:'recover',stT:3,pressed:action});updatePlayer(r,p);
+    assert.equal(p.queued,null,'sin acciones preparadas a distancia');rooms.delete(r.code);
+  }
+  // Pared y devolución: el CPU se ofrece; el humano conserva su dirección manual.
+  {
+    const r=newRoom('t',3,3);r.state='play';
+    const p=fixture(r,0,'field',cleanProfile({}),null),mate=fixture(r,0,'field',cleanProfile({}),'a'),back=fixture(r,0,'field',cleanProfile({}),null);
+    r.players=[p,mate,back];Object.assign(p,{x:220,y:CY,face:0});Object.assign(mate,{x:350,y:CY});Object.assign(back,{x:170,y:CY-80});
+    controlBall(r,p);doPass(r,p,0);assert.equal(p.oneTwoT,PACE.oneTwoT);
+    fieldAI(r,p);assert(p.aiDir.x>0&&p.aiDir.y>0,'desmarque diagonal tras pasar');
+    controlBall(r,mate);const plan=teamPlan(r,0),target=plan.targets.get(p.id);
+    assert.equal(target.role,'devolución');assert(target.x>p.x+80,'ofrece un pase por delante');
+    assert.equal(plan.targets.get(back.id).role,'apoyo','conserva una opción atrás');
+    Object.assign(mate,{input:B.UP,pressed:0});updatePlayer(r,mate);assert(mate.vy<0,'el humano sigue moviéndose manualmente');
+    Object.assign(p,{team:1});updatePlayer(r,p);assert.equal(p.oneTwoT,0,'perder la posesión cancela la ruptura');
+    p.team=0;controlBall(r,p);doPass(r,p,Math.PI);assert.equal(p.oneTwoT,0,'pase libre a pared sin ruptura forzada');
+    rooms.delete(r.code);
+  }
+  // Apoyos: opción atrás, amplitud y sólo un perseguidor; pedido útil sin forzar pase tapado.
+  {
+    const r=newRoom('t',4,3);r.state='play';buildRoster(r);
+    const players=r.players.filter(p=>p.team===0&&p.kind==='field'),owner=players[0];
+    players.forEach((p,i)=>Object.assign(p,{x:200+i*45,y:90+i*55}));Object.assign(owner,{x:320,y:CY});controlBall(r,owner);
+    const plan=teamPlan(r,0),targets=[...plan.targets.values()];
+    assert(targets.some(t=>t.x<owner.x-40),'apoyo hacia atrás');assert(targets.some(t=>Math.abs(t.y-owner.y)>55),'amplitud');
+    for(let i=0;i<targets.length;i++)for(let j=i+1;j<targets.length;j++)assert(dist(targets[i].x,targets[i].y,targets[j].x,targets[j].y)>30,'apoyos separados');
+    const defend=teamPlan(r,1);assert.equal([...defend.targets.values()].filter(t=>t.role==='presión').length,1);
+    const mate=players[1];Object.assign(mate,{x:owner.x+100,y:owner.y,callT:100});
+    const opp=r.players.find(p=>p.team===1&&p.kind==='field');Object.assign(opp,{x:owner.x+50,y:owner.y});
+    assert.notEqual(passingOption(r,owner),mate,'pedido tapado no obliga pase');rooms.delete(r.code);
+  }
+  // Pase a un humano que juega de primera hacia el apoyo CPU: dos tramos físicos completos.
+  {
+    const r=newRoom('t',3,3);r.state='play';
+    const p=fixture(r,0,'field',cleanProfile({}),'a'),mate=fixture(r,0,'field',cleanProfile({}),'b'),support=fixture(r,0,'field',cleanProfile({}),null);r.players=[p,mate,support];
+    Object.assign(p,{x:220,y:CY,face:0});Object.assign(mate,{x:400,y:CY,face:Math.PI});Object.assign(support,{x:320,y:CY-90});controlBall(r,p);doPass(r,p,0);
+    let first=false,second=false;
+    for(let i=0;i<220&&!r.ball.owner;i++){
+      r.tick++;
+      if(!first&&dist(mate.x,mate.y,r.ball.x,r.ball.y)<27){
+        const dx=support.x-mate.x,dy=support.y-mate.y,l=Math.hypot(dx,dy);mate.aiDir={x:dx/l,y:dy/l};mate.pressed=B.PASS;first=true;
+      }
+      updatePlayer(r,mate);updateBall(r);checkTouches(r);
+      if(mate.kickKind==='pass'){second=true;mate.aiDir=null;mate.input=0;}
+    }
+    assert(first&&second,'pase de primera ejecutado dentro de ventana');assert.equal(r.ball.owner,support,'el apoyo controla el segundo tramo');rooms.delete(r.code);
+  }
+  // Colisiones: ni bloqueo en solapamiento cero ni empujones grandes; conserva tangente.
+  {
+    const r=newRoom('t',2,3);r.state='play';const a=fixture(r,0,'field',cleanProfile({}),'a'),b=fixture(r,1,'field',cleanProfile({}),'b');r.players=[a,b];
+    Object.assign(a,{x:300,y:CY,vx:2,vy:1});Object.assign(b,{x:315,y:CY,vx:0,vy:0});collidePlayers(r);
+    assert.equal(a.vy,1);assert.equal(a.vx,0);assert(Math.abs(a.x-300)<=PACE.contactPush);
+    a.x=b.x=300;a.y=b.y=CY;collidePlayers(r);assert.notEqual(a.x,b.x,'resuelve coincidencia exacta');rooms.delete(r.code);
+  }
+  console.log('gameplay OK: cambio defensivo, exclusividad, sprint, apoyos, regates y primera intención');
   // Conexión lenta: sólo estado fresco, con eventos conservados y sin frenar al otro cliente.
   {
     const r=newRoom('t',1,3);r.state='play';
