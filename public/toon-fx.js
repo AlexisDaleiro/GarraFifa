@@ -7,16 +7,16 @@
   const ease=t=>1-Math.pow(1-clamp(t),3);
   function hash(n){n=(Number(n)||0)>>>0;n=Math.imul(n^(n>>>16),0x45d9f3b);return (n^(n>>>16))>>>0;}
   const BODIES=[
-    {name:'petiso',height:.60,width:1.15,spine:[1.12,.9,1.1],leg:[1.15,.76,1.15],arm:[1.1,.8,1.1]},
-    {name:'panzon',height:.88,width:1.12,belly:true,spine:[1.13,1,1.15],leg:[1.25,.8,1.25],arm:[1.18,.9,1.18]},
-    {name:'muletas',height:.94,width:1,crutches:true,spine:[.94,1,.94],leg:[.9,.96,.9],arm:[1,1,1]},
-    {name:'normal',height:1,width:1,spine:[1,1,1],leg:[1,.94,1],arm:[1,1,1]},
-    {name:'flaco',height:1.08,width:.80,spine:[.86,1.06,.88],leg:[.85,1.04,.85],arm:[.85,1.08,.85]},
-    {name:'grandote',height:1.05,width:1.13,spine:[1.10,1.02,1.08],leg:[1.2,.95,1.2],arm:[1.25,1,1.25]},
-    {name:'zapatones',height:.82,width:1.06,feet:1.6,spine:[1.03,1,1],leg:[1,.88,1],arm:[1.15,.92,1.15]}
+    {name:'flaco',height:.94,width:.9,spine:[.9,1,.92],leg:[.94,1,.94],arm:[.94,1,.94]},
+    {name:'normal',height:1,width:1,spine:[1,1,1],leg:[1,1,1],arm:[1,1,1]},
+    {name:'robusto',height:1.06,width:1.08,spine:[1.08,1,1.08],leg:[1.04,1,1.04],arm:[1.05,1,1.05]},
   ];
-  // Un ciclo de siete garantiza variedad incluso en una sala de ocho jugadores.
-  const identity=id=>({body:BODIES[((Math.max(1,Number(id)||1)-1)%BODIES.length)|0],hair:hash(id*17+9)%5});
+  const BOOTS=['#f5e458','#ef6d45','#67ccdc','#f4f0e5','#202129','#af80de'];
+  function identity(id){
+    id=Math.max(1,Number(id)||1);const n=hash(id*17+9),body=BODIES[(id-1)%BODIES.length|0];
+    return {body:{...body,height:.92+(hash(id*23)%161)/1000},hair:(id-1)%7,boots:BOOTS[n%BOOTS.length],
+      wrist:!!(n&1),band:!!(n&2),socks:n%2?'altas':'bajas',shirt:['seleccion','sinMangas','afuera'][n%3]};
+  }
   const FALLS=['piscinazo','voltereta','rodando','senton','trompo','drama'];
   function variant(seed,duration){return (duration<40?SHORT:LONG)[hash(seed)%(duration<40?3:6)];}
   function fallPose(f,tick,out={}){

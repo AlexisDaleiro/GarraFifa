@@ -23,10 +23,14 @@ const bodies=new Set(),hair=new Set();
 for(let id=1;id<=22;id++){
   assert.deepEqual(identity(id),identity(id));bodies.add(identity(id).body.name);hair.add(identity(id).hair);
 }
-assert.equal(bodies.size,7);assert.equal(hair.size,5);
-assert.equal(new Set(Array.from({length:8},(_,i)=>identity(i+1).body.name)).size,7,'variedad completa en 3v3 con arqueros');
-assert(identity(3).body.crutches);assert(identity(2).body.belly);
-assert(identity(1).body.height<identity(5).body.height*.65);
+assert.equal(bodies.size,3);assert.equal(hair.size,7);
+for(let id=1;id<=100;id++){
+  const a=identity(id);assert.deepEqual(a,identity(id),'apariencia sincronizada por id');
+  assert(a.body.height>=.92&&a.body.height<=1.08,'altura dentro de ±8 %');
+  assert(['seleccion','sinMangas','afuera'].includes(a.shirt));
+  assert(/^#[0-9a-f]{6}$/i.test(a.boots));
+}
+assert.equal(new Set(Array.from({length:22},(_,i)=>identity(i+1).shirt)).size,3);
 const early=create(),late=create(),event={type:'foul',tick:100,victim:2,fall:{seed:17,duration:70,dx:0,dy:1,power:1}};
 early.ingest(event,{t:100});late.ingest(event,{t:130});late.ingest(event,{t:130});
 assert.deepEqual(early.options(p,info,140,'play'),late.options(p,info,140,'play'),'entrada tardía conserva variante y fase');

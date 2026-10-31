@@ -36,11 +36,11 @@
       return null;
     };
     const explicit=material.userData?.kitRole||mesh.userData?.kitRole;
-    if(['shirt','shorts','socks','skin','hair'].includes(explicit)) return explicit;
+    if(['shirt','shorts','socks','skin','hair','boots'].includes(explicit)) return explicit;
     return classify((material.name||'').toLowerCase())||classify((mesh.name||'').toLowerCase());
   }
   function palette(kit,id) {
-    return {shirt:kit.c1,shorts:kit.sh,socks:kit.so,skin:SKINS[id%SKINS.length],hair:HAIRS[(id*7)%HAIRS.length]};
+    return {shirt:kit.c1,shorts:kit.sh,socks:kit.so,skin:SKINS[id%SKINS.length],hair:HAIRS[(id*7)%HAIRS.length],detail:kit.c2||kit.c1,boots:FX.identity(id).boots};
   }
   // Control separado del renderer para verificar transiciones y velocidad sin WebGL.
   const BASE=new Set(['idle','jog','sprint']);
@@ -154,12 +154,35 @@
     actor.features.teeth=part(shared.eye,[0,1.1,1.65],[.38,.1,.05]);
     const hair=actor.materials.find(m=>m.role==='hair')?.material||shared.pupil;
     const tuft=(pos,size,mat=hair)=>{const mesh=new THREE.Mesh(shared.tuft,mat);mesh.position.set(...pos);mesh.scale.set(...size);face.add(mesh);return mesh;};
+    const detail=new THREE.MeshToonMaterial({color:'#ffffff'});actor.materials.push({material:detail,role:'detail'});
     const style=actor.identity.hair;
-    if(style===0)for(let i=0;i<7;i++){const a=i*Math.PI/3;tuft([Math.cos(a)*1.2,3.9+Math.sin(a)*.3,.1+Math.sin(a)*.8],[.85,.85,.8]);}
-    if(style===1)for(let i=0;i<4;i++)tuft([0,4.1,-.8+i*.6],[.28,1.05,.42]);
-    if(style===2){tuft([0,3.65,0],[1.45,.7,1.25],skin);tuft([-.5,4.17,.5],[.45,.12,.35],shared.eye);}
-    if(style===3)for(const side of [-1,1]){const mesh=tuft([side*.48,1.4,1.94],[.65,.24,.18]);mesh.rotation.z=side*.25;}
+    if(style!==1)tuft([0,3.65,0],[1.43,.4,1.28]); // rapado como base
+    if(style===1)for(let i=0;i<9;i++){const a=i*Math.PI/4;tuft([Math.cos(a)*1.1,3.9+Math.sin(a)*.25,Math.sin(a)*.8],[1,1,.9]);}
+    if(style===2)for(let i=0;i<7;i++)tuft([-1.2+i*.4,2.8,-.95],[.22,1.6,.3]); // rastas
+    if(style===3)tuft([0,4.15,-1],[.8,.85,.8]); // rodete
+    if(style===4)for(let i=0;i<4;i++)tuft([0,4.1,-.8+i*.6],[.28,1.05,.42]);
+    if(style===5||actor.identity.band)tuft([0,3.25,.15],[1.5,.18,1.35],detail);
+    if(style===6){tuft([0,3.8,0],[1.6,.65,1.4],detail);tuft([0,3.65,-1.5],[1.2,.1,.9],detail);}
+    addStreetExtras(THREE,shared,actor,skin,detail);
     addBodyExtras(THREE,shared,actor);
+  }
+  function addStreetExtras(THREE,shared,actor,skin,detail){
+    const {object,identity}=actor,shirt=actor.materials.find(m=>m.role==='shirt')?.material;
+    const add=(name,mat,pos,size)=>{
+      const bone=object.getObjectByName(name);if(!bone)return;
+      const group=new THREE.Group(),q=new THREE.Quaternion(),v=new THREE.Vector3();
+      bone.getWorldQuaternion(q);group.quaternion.copy(q.invert().multiply(object.getWorldQuaternion(new THREE.Quaternion())));
+      group.scale.setScalar(1/bone.getWorldScale(v).x);bone.add(group);
+      for(const [material,factor] of [[shared.ink,1.08],[mat,1]]){
+        const m=new THREE.Mesh(shared.sphere,material);m.position.set(...pos);m.scale.set(size[0]*factor,size[1]*factor,size[2]*factor);group.add(m);
+      }
+    };
+    for(const side of ['l','r']){
+      if(identity.wrist)add('hand_'+side,detail,[0,.2,0],[1.1,.7,1]);
+      if(identity.socks==='bajas')add('calf_'+side,skin,[0,-1.1,0],[1.55,2.2,1.6]);
+      if(identity.shirt==='sinMangas')add('upperarm_'+side,skin,[0,-1.2,0],[1.65,2.1,1.65]);
+    }
+    if(identity.shirt==='afuera'&&shirt)add('pelvis',shirt,[0,1,0],[4.1,2.2,2.65]);
   }
   function bodyScales(actor){
     const body=actor.identity.body;

@@ -6,6 +6,7 @@
   ({ W, H, CX, CY, GOAL_TOP, GOAL_BOT, GOAL_H, BOX_D, BOX_TOP, BOX_BOT, PEN_SPOT } = pitchGeom(pitch));
   const GOAL_DEPTH = 26;
   const TICK_MS = 1000 / 60, VIEW_H = 360, FM = 110, FS = 2;
+  const TILT = 0.78, K = 0.62 / TILT;
   const B = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, SPRINT: 16, PASS: 128, SHOOT: 1024 };
   const toon = ToonFX.create(),C=FootballContinuity;
   const netClock=C.createClock(),liveSampler=C.createSampler(),replaySampler=C.createSampler(),presentation=C.createPresenter();
@@ -32,6 +33,11 @@
     set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* sin almacenamiento */ } },
   };
   const profile = Object.assign({ name: '', num: 10 }, store.get('garra-profile') || {});
+  function theme(k) {
+    const s=document.documentElement.style,n=parseInt(k.c1.slice(1),16);
+    s.setProperty('--team-c1',k.c1);s.setProperty('--team-c2',k.c2);
+    s.setProperty('--team-ink',.299*(n>>16)+.587*((n>>8)&255)+.114*(n&255)>150?'#111':'#fff');
+  }
 
   // ---------- Audio sintetizado (Web Audio API) ----------
   const audio = (() => {
@@ -238,7 +244,10 @@
   const goLandscape = () => { if (!matchMedia('(pointer: coarse)').matches) return; try { const fs = document.documentElement.requestFullscreen?.(); (fs || Promise.resolve()).then(() => screen.orientation?.lock?.('landscape')).catch(() => {}); } catch {} };
   $('btnCreate').onclick = () => {
     goLandscape(); audio.init(); readProfile(); toon.reset(); resetNetwork();
-    socket.emit('create', { pitch: +$('pitch').value, mode: +$('mode').value, minutes: +$('minutes').value, cid, profile }, onJoined);
+    socket.emit('create', { pitch: +$('pitch').value, mode: +$('mode').value, minutes: +$('minutes').value, cid, profile }, res => {
+      onJoined(res);
+      if(res?.ok){const t=+$('menuTeam').value;socket.emit('settings',{teams:[t,t===1?0:1]});}
+    });
   };
   $('btnJoin').onclick = () => {
     const code = $('joinCode').value.trim().toUpperCase();
@@ -253,7 +262,11 @@
   // Elegir cancha sugiere su cantidad típica (sala 4 + arquero, fútbol 7 6 + arquero).
   for (const id of ['pitch', 'lobbyPitch']) PITCHES.forEach((pt, i) => $(id).add(new Option(pt.name, i)));
   for (const id of ['mode', 'lobbyMode']) for (const n of MODES) $(id).add(new Option(`${n} vs ${n}`, n));
-  $('mode').value = 2;
+  $('mode').value = PITCHES[0].mode;
+  TEAMS.forEach((tm,i)=>$('menuTeam').add(new Option(tm.name,i)));
+  $('menuTeam').value=TEAMS[store.get('garra-team')]?store.get('garra-team'):0;
+  $('menuTeam').onchange=()=>{store.set('garra-team',+$('menuTeam').value);theme(TEAMS[+$('menuTeam').value]);};
+  theme(TEAMS[+$('menuTeam').value]);
   $('pitch').onchange = () => { $('mode').value = PITCHES[+$('pitch').value].mode; };
   $('lobbyPitch').onchange = () => { const i = +$('lobbyPitch').value; socket.emit('settings', { pitch: i, mode: PITCHES[i].mode }); };
   $('lobbyMode').onchange = () => socket.emit('settings', { mode: +$('lobbyMode').value });
@@ -318,6 +331,10 @@
       $('tn' + t).textContent = tm.code;
       $('tn' + t).style.background = k.c1;
       $('tn' + t).style.color = ink(k.c1);
+      const s=document.documentElement.style;s.setProperty('--team-'+t+'-c1',k.c1);s.setProperty('--team-'+t+'-ink',ink(k.c1));
+      s.setProperty(t?'--blue':'--red',k.c1);
+      $('teamCard'+t).style.borderColor=k.c1;
+      $('teamName'+t).style.color=ink(k.c1);
     }
     for (const btn of document.querySelectorAll('.joinTeam')) {
       const t = +btn.dataset.team;
@@ -326,6 +343,7 @@
       btn.disabled = !me || me.team === t || count >= r.mode;
     }
     $('lobbyMode').value = r.mode;
+    theme(teamKit(me?me.team:0));
     $('lobbyPitch').value = r.pitch;
     $('lobbyMinutes').value = r.minutes;
     $('lobbyMode').disabled = $('lobbyPitch').disabled = $('lobbyMinutes').disabled = !isHost;
@@ -344,7 +362,8 @@
     g.setTransform(4.8, 0, 0, 4.8 * TILT, c.width / 2, c.height * 0.88);
     ell(g, 1.5, 1, 8, 4.5, 'rgba(0,0,0,0.3)');
     const info = { id: 3, team: me ? me.team : 0, kind: 'field', num: profile.num };
-    drawPlayer(g, { x: 0, y: 0, face: Math.PI / 2 - 0.5, st: 'run', flags: 0 }, info, { phase: 0, speed: 0 });
+    g.scale(1,1/TILT);
+    FootballPlayer3D.draw(g,{x:0,y:0,face:Math.PI/2-.5,st:'run',flags:0},info,makeKit(info),{speed:0},{time:performance.now()});
   }
 
   function showEnd() {
@@ -483,16 +502,24 @@
     estadio: { bg: '#151a24', base: '#1d5f29', stripes: ['#2a8435', '#2f8f3a'], fans: 22000, grain: 'rgba(180,255,170,' },
     sintetico: { bg: '#1b2b22', base: '#1f7a34', stripes: ['#2c9a43', '#33a64a'], fans: 0, grain: 'rgba(200,255,190,' },
     parquet: { bg: '#2a2d36', base: '#b5763d', stripes: ['#c98a4b', '#c2824a'], fans: 0, grain: 'rgba(255,230,190,' },
+    jaula: { bg: '#293a3b', base: '#777d79', stripes: ['#858c85','#818981'], fans: 0, grain: 'rgba(245,240,216,' },
+    potrero: { bg: '#59543c', base: '#987146', stripes: ['#ad8554','#a78050'], fans: 0, grain: 'rgba(239,215,154,' },
+    azotea: { bg: '#b67e83', base: '#627b87', stripes: ['#738d96','#6b858f'], fans: 0, grain: 'rgba(255,213,168,' },
   };
   const fieldCv = document.createElement('canvas');
+  let fieldVersion=0;
   function buildField() {
+    const version=++fieldVersion;
     fieldCv.width = (W + FM * 2) * FS;
     fieldCv.height = (H + FM * 2) * FS;
     const g = fieldCv.getContext('2d'), L = LOOKS[pitch.look] || LOOKS.estadio;
     g.scale(FS, FS);
     g.translate(FM, FM);
-    const GM = 64; // césped fuera de las líneas; más allá, tribunas
+    const GM = pitch.wall ? 0 : 64; // en la calle el entorno empieza detrás de la pared
     g.fillStyle = L.bg;
+    if(pitch.look==='azotea'){
+      const sky=g.createLinearGradient(0,-FM,0,0);sky.addColorStop(0,'#70566e');sky.addColorStop(1,'#efb17f');g.fillStyle=sky;
+    }
     g.fillRect(-FM, -FM, W + FM * 2, H + FM * 2);
     const fans = ['#d62828', '#f4f4f4', '#1d4ed8', '#ffd23f', '#2b2b2b', '#7cc0ea', '#f1c27d', '#8d5524', '#0a8f3c'];
     for (let i = 0; i < L.fans; i++) {
@@ -525,7 +552,7 @@
     const ads = ['GARRA FC', 'SOCKET.IO', 'CANVAS 2D', 'GOLAZO', 'WEB AUDIO', 'LA CROQUETA'];
     g.font = '700 11px "Chakra Petch", sans-serif';
     g.textAlign = 'center'; g.textBaseline = 'middle';
-    for (let i = 0, x = 0; x < W; x += 125, i++) {
+    for (let i = 0, x = 0; !pitch.wall && x < W; x += 125, i++) {
       for (const y of [-52, H + 38]) {
         g.fillStyle = i % 2 ? '#0d2a63' : '#7a1018';
         g.fillRect(x + 4, y, 117, 14);
@@ -541,7 +568,7 @@
     g.beginPath(); g.arc(CX, CY, pitch.circle, 0, Math.PI * 2); g.stroke();
     g.beginPath(); g.arc(CX, CY, 3, 0, Math.PI * 2); g.fill();
     const arcA = Math.acos(Math.min(1, (BOX_D - PEN_SPOT) / 80));
-    for (const s of [0, 1]) {
+    for (const s of pitch.area===false?[]:[0, 1]) {
       const x0 = s ? W : 0, dir = s ? -1 : 1;
       g.strokeRect(s ? W - BOX_D : 0, BOX_TOP, BOX_D, BOX_BOT - BOX_TOP);
       if (pitch.smallH) g.strokeRect(s ? W - pitch.small : 0, CY - pitch.smallH / 2, pitch.small, pitch.smallH);
@@ -555,12 +582,25 @@
     for (const [x, y, a0] of [[0, 0, 0], [W, 0, Math.PI / 2], [W, H, Math.PI], [0, H, Math.PI * 1.5]]) {
       g.beginPath(); g.arc(x, y, 9, a0, a0 + Math.PI / 2); g.stroke();
     }
+    if(pitch.look==='potrero'){
+      for(let i=0;i<65;i++){const x=(i*173%W),y=(i*97%H);g.fillStyle='#697b48';g.fillRect(x,y,4+i%6,2);}
+      for(const [x,y] of [[W*.24,H*.7],[W*.78,H*.21]]){g.fillStyle='#71888b';g.beginPath();g.ellipse(x,y,24,9,.15,0,Math.PI*2);g.fill();}
+    }
+    if(pitch.look==='jaula'){
+      g.strokeStyle='#4b5651';g.lineWidth=1;g.beginPath();g.moveTo(W*.1,H*.2);g.lineTo(W*.35,H*.3);g.lineTo(W*.41,H*.23);g.stroke();
+    }
+    if(pitch.look==='azotea'){
+      g.strokeStyle='#e5a16e';g.lineWidth=5;g.strokeRect(15,15,W-30,H-30);
+    }
+    if(pitch.wall)StreetField.render(pitch,FM,K).then(canvas=>{
+      if(version!==fieldVersion)return;
+      const g=fieldCv.getContext('2d');g.save();g.setTransform(1,0,0,1,0,0);g.drawImage(canvas,0,0,fieldCv.width,fieldCv.height);g.restore();
+    }).catch(e=>console.error('Decoración de cancha:',e));
   }
   buildField();
 
   // ---------- Dibujo ----------
   // Cámara 3/4 estilo TV: el suelo se achata en Y (TILT) y la altura z sube en pantalla K unidades por unidad.
-  const TILT = 0.78, K = 0.62 / TILT;
   let cw = 0, ch = 0;
   function resize() {
     transitionScene();
@@ -587,10 +627,9 @@
   const inkCache=new Map();
   const ink=h=>{let c=inkCache.get(h);if(!c){const n=parseInt(h.slice(1),16);c=.299*(n>>16)+.587*((n>>8)&255)+.114*(n&255)>150?'#111':'#fff';inkCache.set(h,c);}return c;};
   function teamKit(slot) {
-    const ids = roomInfo ? roomInfo.teams : [0, 1], t = TEAMS[ids[slot]];
+    const ids = roomInfo ? roomInfo.teams : [0, 1];
     // el visitante usa la suplente si las camisetas se parecen
-    if (slot === 1 && colDist(t.c1, TEAMS[ids[0]].c1) < 120) return { ...t, c1: t.alt[0], c2: t.alt[1], pat: 'liso' };
-    return t;
+    return teamKitFor(ids,slot);
   }
   function gkCol(slot) {
     const k = [teamKit(0).c1, teamKit(1).c1];
@@ -685,9 +724,10 @@
     return {fill,grid,x:Math.min(gx,x1)};
   }
   let leftNet=makeNet(0,-1),rightNet=makeNet(W,1);
-  function drawNet(gx){const n=gx===0?leftNet:rightNet;ctx.fillStyle='rgba(0,0,0,.2)';ctx.fillRect(n.x,GOAL_TOP,GOAL_DEPTH,GOAL_BOT-GOAL_TOP);ctx.fillStyle='rgba(255,255,255,.07)';ctx.fill(n.fill);ctx.strokeStyle='rgba(255,255,255,.32)';ctx.lineWidth=.4;ctx.stroke(n.grid);}
+  function drawNet(gx){if(pitch.look==='potrero')return;const n=gx===0?leftNet:rightNet;ctx.fillStyle='rgba(0,0,0,.2)';ctx.fillRect(n.x,GOAL_TOP,GOAL_DEPTH,GOAL_BOT-GOAL_TOP);ctx.fillStyle='rgba(255,255,255,.07)';ctx.fill(n.fill);ctx.strokeStyle='rgba(255,255,255,.32)';ctx.lineWidth=.4;ctx.stroke(n.grid);}
   // palo lejano + travesaño (se ordena en y=GOAL_TOP) y palo cercano (en y=GOAL_BOT)
   function drawPost(gx, y, bar) {
+    if(pitch.look==='potrero')return; // las piedras y mochilas marcan el arco
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 2.2; ctx.lineCap = 'round';
     ctx.beginPath();
     ctx.moveTo(gx,y);ctx.lineTo(gx,y-GOAL_H*K);
@@ -797,12 +837,13 @@
       case 'tackle': audio.tackle(); spawnGrass(e.x, e.y, 16, 2.5); floater('¡QUITE!', e.id); break;
       case 'foul':
         audio.whistle(1, 0.9); audio.ooh();
-        banner(e.pen ? '¡PENAL!' : '¡FALTA!', e.pen ? '' : 'TIRO LIBRE', 'foul', 1800);
+        banner(e.pen ? '¡PENAL!' : '¡FALTA!', pitch.wall ? 'PELOTA PARA EL RIVAL · SEGUÍ JUGANDO' : e.pen ? '' : 'TIRO LIBRE', 'small foul', pitch.wall?800:1800);
         spawnGrass(e.x, e.y, 20, 2.5);
         cam.shake = 3;
         break;
       case 'setpiece':
         if (e.kind === 'kickoff') audio.whistle(1, 0.5);
+        if (pitch.wall && e.kind === 'goalkick') { banner(e.label,'','small t'+e.team,650); break; }
         if (e.kind === 'goalkick' && myTeam() === e.team) banner(e.label, GK_HINT, 'small t' + e.team, 2600);
         else if (['corner', 'goalkick', 'throw'].includes(e.kind)) banner(e.label, '', 'small t' + e.team, 1200);
         break;

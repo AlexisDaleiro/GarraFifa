@@ -16,5 +16,17 @@
     { name: 'Colombia', code: 'COL', c1: '#fcd116', c2: '#003893', pat: 'liso', sh: '#003893', so: '#c8102e', alt: ['#c8102e', '#ffffff'] },
     { name: 'Portugal', code: 'POR', c1: '#9e1b32', c2: '#0a6b3a', pat: 'liso', sh: '#0a6b3a', so: '#9e1b32', alt: ['#ffffff', '#9e1b32'] },
     { name: 'Garra FC', code: 'GFC', c1: '#d62828', c2: '#ffd23f', pat: 'franja', sh: '#111111', so: '#d62828', alt: ['#111111', '#ffd23f'] },
+    { name: 'Chile', code: 'CHI', c1: '#d52b1e', c2: '#ffffff', pat: 'liso', sh: '#0039a6', so: '#ffffff', alt: ['#ffffff', '#d52b1e'] },
+    { name: 'Perú', code: 'PER', c1: '#ffffff', c2: '#d91023', pat: 'franja', sh: '#ffffff', so: '#ffffff', alt: ['#d91023', '#ffffff'] },
+    { name: 'Japón', code: 'JPN', c1: '#173a8a', c2: '#ffffff', pat: 'liso', sh: '#ffffff', so: '#173a8a', alt: ['#ffffff', '#bc002d'] },
+    { name: 'Nigeria', code: 'NGA', c1: '#008751', c2: '#ffffff', pat: 'liso', sh: '#ffffff', so: '#008751', alt: ['#ffffff', '#008751'] },
+    { name: 'Bélgica', code: 'BEL', c1: '#d71920', c2: '#fdda24', pat: 'liso', sh: '#111111', so: '#d71920', alt: ['#fdda24', '#111111'] },
+    { name: 'Suecia', code: 'SWE', c1: '#fecc00', c2: '#006aa7', pat: 'liso', sh: '#006aa7', so: '#fecc00', alt: ['#006aa7', '#fecc00'] },
   ];
+  // Misma decisión en vista previa, cancha y pruebas.
+  root.teamKitFor = (ids, slot) => {
+    const t=root.TEAMS[ids[slot]],a=parseInt(t.c1.slice(1),16),b=parseInt(root.TEAMS[ids[0]].c1.slice(1),16);
+    const d=Math.hypot((a>>16)-(b>>16),((a>>8)&255)-((b>>8)&255),(a&255)-(b&255));
+    return slot===1&&d<120?{...t,c1:t.alt[0],c2:t.alt[1],pat:'liso'}:t;
+  };
 })(typeof module !== 'undefined' ? module.exports : window);

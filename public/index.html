@@ -14,11 +14,12 @@
 <!-- MENÚ -->
 <section id="menu" class="screen active">
   <h1 class="logo">GARRA<span>FC</span></h1>
-  <p class="tagline">Fútbol arcade · 3 botones · salas con amigos</p>
+  <p class="tagline">Fútbol callejero · pases y paredes · 3 botones</p>
   <div class="card menu-card">
     <label class="field">Tu nombre
       <input id="name" maxlength="12" autocomplete="off" placeholder="Crack">
     </label>
+    <label class="field">Tu selección al crear sala <select id="menuTeam"></select></label>
     <div class="menu-cols">
       <div class="menu-col">
         <h3>Crear sala</h3>
@@ -57,6 +58,7 @@
         <li><b class="tk">PASE</b> Pasala: el juego elige raso, al hueco o bombeado</li>
         <li><b class="tk">TIRO</b> Mantener para más potencia</li>
         <li><b class="tk">SPRINT</b> Correr (gasta Garra)</li>
+        <li>Apuntá a la pared y usá <b class="tk">PASE</b> para jugar con el rebote</li>
         <li>Si la tiene el rival, <b class="tk">PASE</b> se vuelve <b class="tk">BARRIDA</b></li>
         <li>Si la tiene un compañero, <b class="tk">PASE</b> la pide</li>
         <li><b class="tk">?</b> (arriba a la izquierda) Ver ayuda en el partido</li>
@@ -69,6 +71,7 @@
       <li><kbd>S</kbd> Pase: el juego elige raso, al hueco o bombeado</li>
       <li><kbd>D</kbd> Tiro: mantener para más potencia</li>
       <li><kbd>Espacio</kbd> Sprint (gasta Garra)</li>
+      <li>Apuntá a la pared y usá <kbd>S</kbd> para jugar con el rebote</li>
       <li>Si la tiene el rival, <kbd>S</kbd> es barrida</li>
       <li>Si la tiene un compañero, <kbd>S</kbd> la pide</li>
     </ul>
@@ -153,12 +156,13 @@
     <div class="only-touch">
       <b>Controles táctiles</b>
       <p>Joystick mover · PASE · TIRO (mantener) · SPRINT</p>
-      <p>Rival con la pelota: PASE = BARRIDA. Compañero con la pelota: PASE la pide.</p>
+      <p>Apuntá a la pared y pasá: cualquiera puede agarrar el rebote. Rival con la pelota: PASE = BARRIDA. Compañero: pedirla.</p>
       <p>Tocá <b>Controles</b> otra vez en el menú para cerrar.</p>
     </div>
     <div class="only-keys">
     <b>Controles</b>
     <p>←↑↓→ mover · S pase · D tiro (mantener) · Espacio sprint</p>
+    <p>Apuntá a la pared y pasá con S. Cualquiera puede agarrar el rebote, incluido el que pateó.</p>
     <p>Rival con la pelota: S barrida. Compañero con la pelota: S la pide. Si el pase ya viene hacia vos, S o D le pegan de primera.</p>
     </div>
   </div>
@@ -211,6 +215,7 @@
 <script src="continuity.js"></script>
 <script src="toon-fx.js"></script>
 <script src="player3d.js"></script>
+<script src="street.js"></script>
 <script src="game.js"></script>
 </body>
 </html>

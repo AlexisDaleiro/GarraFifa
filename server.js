@@ -40,6 +40,7 @@ const PACE = {
   recoverHit: 18, recoverMiss: 42, tackleBall: 3.96,
   aiPass: 0.025, aiPassPressed: 0.09, aiPressure: 100, aiCarrySprint: 55,
   aiChaseSprint: 100, aiReceiveSprint: 80, aiDodge: 30,
+  wallBounce: 0.7, wallSpin: 0.65, wallH: 34, restartT: 30, foulSpace: 36,
 };
 
 // Tres botones: PASE (si la tiene el rival: barrida; si un compañero: pedirla), TIRO y SPRINT.
@@ -288,6 +289,7 @@ function goal(room, team) {
 
 function outOfPlay(room, kind) {
   const b = room.ball;
+  if (PITCHES[room.pitch].wall) return quickGoalKick(room, kind === 'throw' ? 1 - b.lastTeam : b.x < 0 ? 0 : 1);
   emitEv(room, { type: 'whistle' });
   if (kind === 'throw') return setPiece(room, 'throw', 1 - b.lastTeam, clamp(b.x, 10, W - 10), b.y < 0 ? 2 : H - 2);
   const left = b.x < 0, defTeam = left ? 0 : 1;
@@ -296,6 +298,13 @@ function outOfPlay(room, kind) {
 }
 
 function foul(room, s, o) {
+  if (PITCHES[room.pitch].wall) {
+    s.st = 'recover'; s.stT = PACE.recoverMiss; s.vx = s.vy = 0;
+    o.st = 'run'; o.stT = 0; o.vx = o.vy = 0;
+    pushOut(s, o.x, o.y, PACE.foulSpace); controlBall(room, o);
+    emitEv(room, { type: 'foul', id: s.id, victim: o.id, x: r1(o.x), y: r1(o.y), pen: false });
+    return;
+  }
   const fall=fallFX(room,s,o,70);
   o.st = 'down'; o.stT = 70; o.vx *= 0.3; o.vy *= 0.3; o.charging = false;
   s.vx *= 0.3; s.vy *= 0.3;
@@ -309,6 +318,16 @@ function foul(room, s, o) {
 }
 
 // ---------- Acciones con balón ----------
+function quickGoalKick(room, team) {
+  const g = room.players.find(p => p.team === team && p.kind === 'gk');
+  if (!g) return; // pruebas aisladas sin arquero
+  resetMotion(g); g.face = team === 0 ? 0 : Math.PI;
+  g.x = team === 0 ? PACE.foulSpace : W - PACE.foulSpace; g.y = CY;
+  controlBall(room, g); g.st = 'hold'; g.stT = PACE.restartT;
+  room.state = 'play'; room.sp = null;
+  emitEv(room, { type: 'setpiece', kind: 'goalkick', label: '¡SACÁ Y JUGÁ!', team });
+}
+
 function kickBall(room, p, vx, vy, vz, spin) {
   const b = room.ball;
   b.owner = null; b.vx = vx; b.vy = vy; b.vz = vz; b.spin = spin || 0;
@@ -322,11 +341,15 @@ function kickBall(room, p, vx, vy, vz, spin) {
 // Asistencia estilo PES: el compañero más alineado con la dirección gana; las líneas tapadas por rivales restan.
 function findMate(room, p, aim) {
   const fx = Math.cos(aim), fy = Math.sin(aim);
+  // Apuntar a una pared cercana permite el pase libre, sin desviarlo hacia un compañero.
+  const wallD = PITCHES[room.pitch].wall ? Math.min(
+    fx ? ((fx > 0 ? W - BALL_R : BALL_R) - p.x) / fx : Infinity,
+    fy ? ((fy > 0 ? H - BALL_R : BALL_R) - p.y) / fy : Infinity) : Infinity;
   let best = null, bestScore = -Infinity;
   for (const m of room.players) {
     if (m === p || m.team !== p.team || m.kind === 'gk') continue;
     const dx = m.x - p.x, dy = m.y - p.y, d = Math.hypot(dx, dy);
-    if (d < 30 || d > 560) continue;
+    if (d < 30 || d > 560 || d > wallD) continue;
     const dot = (dx * fx + dy * fy) / d;
     if (dot < 0.2) continue;
     const score = dot * 3 - d / 500 - linePenalty(room, p, m);
@@ -377,7 +400,7 @@ function doPass(room, p, aim, kind) {
     tx = b.x + Math.cos(aim) * L;
     ty = b.y + Math.sin(aim) * L;
   }
-  tx = clamp(tx, 8, W - 8); ty = clamp(ty, 8, H - 8);
+  if (mate || !PITCHES[room.pitch].wall) { tx = clamp(tx, 8, W - 8); ty = clamp(ty, 8, H - 8); }
   const d = Math.hypot(tx - b.x, ty - b.y) || 1;
   const ang = Math.atan2(ty - b.y, tx - b.x) + rnd(-1, 1) * (p.tired ? 0.04 : 0.012);
   if (kind === 'lob') {
@@ -556,6 +579,10 @@ function updatePlayer(room, p) {
   }
   p.x = clamp(p.x + p.vx, -30, W + 30);
   p.y = clamp(p.y + p.vy, -30, H + 30);
+  if (PITCHES[room.pitch].wall) {
+    if (p.x < PR || p.x > W - PR) { p.x = clamp(p.x, PR, W - PR); p.vx = 0; }
+    if (p.y < PR || p.y > H - PR) { p.y = clamp(p.y, PR, H - PR); p.vy = 0; }
+  }
   if (p.kind === 'gk') {
     p.x = p.team === 0 ? clamp(p.x, 2, BOX_D - 8) : clamp(p.x, W - BOX_D + 8, W - 2);
     p.y = clamp(p.y, BOX_TOP + 4, BOX_BOT - 4);
@@ -753,6 +780,7 @@ function updateBall(room) {
 
 function checkGoalFrame(room, prevX) {
   const b = room.ball;
+  const posts = PITCHES[room.pitch].look !== 'potrero'; // piedras: sin travesaño invisible
   if (b.inNet) {
     if (b.netSide < 0) { if (b.x < -GOAL_DEPTH) { b.x = -GOAL_DEPTH; b.vx = Math.abs(b.vx) * 0.3; } if (b.x > -2) { b.x = -2; b.vx = -Math.abs(b.vx) * 0.3; } }
     else { if (b.x > W + GOAL_DEPTH) { b.x = W + GOAL_DEPTH; b.vx = -Math.abs(b.vx) * 0.3; } if (b.x < W + 2) { b.x = W + 2; b.vx = Math.abs(b.vx) * 0.3; } }
@@ -762,7 +790,7 @@ function checkGoalFrame(room, prevX) {
     return;
   }
   // Postes
-  if (b.z < GOAL_H) {
+  if (posts && b.z < GOAL_H) {
     for (const gx of [0, W]) for (const gy of [GOAL_TOP, GOAL_BOT]) {
       const dx = b.x - gx, dy = b.y - gy, d = Math.hypot(dx, dy);
       if (d >= 6 || d === 0) continue;
@@ -779,7 +807,7 @@ function checkGoalFrame(room, prevX) {
     const crossed = s < 0 ? prevX >= 0 && b.x < 0 : prevX <= W && b.x > W;
     if (!crossed) continue;
     const inMouth = b.y > GOAL_TOP && b.y < GOAL_BOT;
-    if (inMouth && b.z >= GOAL_H - 2 && b.z <= GOAL_H + 4) {
+    if (posts && inMouth && b.z >= GOAL_H - 2 && b.z <= GOAL_H + 4) {
       b.x = gx - s; b.vx = -b.vx * 0.6; b.vz = Math.abs(b.vz) * 0.4 + 1;
       emitEv(room, { type: 'post', bar: true, ...postFX(room,gx,b.y) });
       return;
@@ -787,6 +815,22 @@ function checkGoalFrame(room, prevX) {
     if (inMouth && b.z < GOAL_H - 2 && room.state === 'play') return goal(room, s < 0 ? 1 : 0);
   }
   if (room.state !== 'play') return;
+  if (PITCHES[room.pitch].wall) {
+    const mouth = b.y > GOAL_TOP && b.y < GOAL_BOT;
+    if (b.owner) { b.y = clamp(b.y, BALL_R, H - BALL_R); if (!mouth) b.x = clamp(b.x, BALL_R, W - BALL_R); return; }
+    if (b.z > PACE.wallH || (mouth && (b.x < 0 || b.x > W))) {
+      if (b.y < 0 || b.y > H) return outOfPlay(room, 'throw');
+      if (b.x < 0 || b.x > W) return outOfPlay(room, 'line');
+    } else {
+      let hit = false;
+      if (b.x < BALL_R && b.vx < 0) { b.x = BALL_R * 2 - b.x; b.vx *= -PACE.wallBounce; hit = true; }
+      if (b.x > W - BALL_R && b.vx > 0) { b.x = (W - BALL_R) * 2 - b.x; b.vx *= -PACE.wallBounce; hit = true; }
+      if (b.y < BALL_R && b.vy < 0) { b.y = BALL_R * 2 - b.y; b.vy *= -PACE.wallBounce; hit = true; }
+      if (b.y > H - BALL_R && b.vy > 0) { b.y = (H - BALL_R) * 2 - b.y; b.vy *= -PACE.wallBounce; hit = true; }
+      if (hit) { b.spin *= PACE.wallSpin; room.pass = null; } // rebote libre para cualquiera
+    }
+    return;
+  }
   if (b.y < -BALL_R * 2 || b.y > H + BALL_R * 2) return outOfPlay(room, 'throw');
   if (b.x < -BALL_R * 2 || b.x > W + BALL_R * 2) return outOfPlay(room, 'line');
 }
@@ -949,6 +993,7 @@ function step(room) {
     for (const p of room.players) {
       p.pressed = 0; p.released = 0;
       p.vx *= 0.92; p.vy *= 0.92; p.x += p.vx; p.y += p.vy;
+      if (PITCHES[room.pitch].wall) { p.x = clamp(p.x, PR, W - PR); p.y = clamp(p.y, PR, H - PR); }
       if (p.stT > 0 && --p.stT === 0) p.st = 'run';
     }
     updateBall(room);
@@ -964,6 +1009,9 @@ function step(room) {
   if (room.state === 'setpiece') enforceSetPiece(room);
   const g = room.ball.owner;
   if (g && g.st === 'hold') for (const o of room.players) if (o.team !== g.team) pushOut(o, g.x, g.y, 55);
+  if (PITCHES[room.pitch].wall) for (const p of room.players) {
+    p.x = clamp(p.x, PR, W - PR); p.y = clamp(p.y, PR, H - PR);
+  }
   updateBall(room);
   if (room.state === 'play') { checkTouches(room); checkSlides(room); }
   if (room.ball.owner) room.ball.owner.callT = 0;
@@ -1150,7 +1198,7 @@ function selfTest() {
     assert.strictEqual(z > GOAL_H - 2, over, `tiro ${power}: altura ${z.toFixed(1)}`);
     rooms.delete(r.code);
   }
-  // 2) Barrida por detrás sin tocar balón = falta y tiro libre para el rival.
+  // 2) Barrida por detrás: posesión rival en el lugar, sin pausar en la calle.
   {
     const r = newRoom('t', 1, 3);
     startMatch(r);
@@ -1160,9 +1208,10 @@ function selfTest() {
     def.x = 584; def.y = 300; def.st = 'slide'; def.stT = PACE.slideT; def.face = 0;
     r.ball.x = 660;
     checkSlides(r);
-    assert.strictEqual(r.state, 'setpiece');
-    assert.strictEqual(r.sp.type, 'free');
-    assert.strictEqual(r.sp.team, att.team);
+    assert.strictEqual(r.state, 'play');
+    assert.strictEqual(r.sp, null);
+    assert.strictEqual(r.ball.owner, att);
+    assert.strictEqual(def.st, 'recover');
     rooms.delete(r.code);
   }
   // 3) Arquero: ataja un tiro suave y, con un humano en su equipo, saca cuando éste pulsa S.
@@ -1190,11 +1239,11 @@ function selfTest() {
     const mate = makePlayer(r, 0, 'field', cleanProfile({}), 'h');
     const opp = makePlayer(r, 1, 'field', cleanProfile({}), null);
     r.players = [p, mate, opp];
-    Object.assign(p, { x: 300, y: 320, face: 0 });
-    Object.assign(mate, { x: 560, y: 420 });
+    Object.assign(p, { x: 300, y: CY, face: 0 });
+    Object.assign(mate, { x: 560, y: CY + 70 });
     Object.assign(opp, { x: 100, y: 100 });
-    Object.assign(r.ball, { owner: p, x: 311, y: 320 });
-    doPass(r, p, Math.atan2(100, 260) - 0.5, kind);
+    Object.assign(r.ball, { owner: p, x: 311, y: CY });
+    doPass(r, p, Math.atan2(70, 260) - 0.5, kind);
     assert.strictEqual(r.pass && r.pass.to, mate.id, `${kind}: no eligió al compañero`);
     assert(snapshot(r).p.find(q => q[0] === p.id)[7] & 32, 'el snapshot debe distinguir pase de tiro para el clip pass');
     for (let i = 0; i < 240 && r.ball.owner !== mate; i++) { updatePlayer(r, mate); updateBall(r); checkTouches(r); }
@@ -1381,7 +1430,7 @@ function selfTest() {
     assert(Math.abs(p.face - PACE.ballTurn) < 1e-9);
     r.ball.owner = null;
     for (const sid of ['a', null]) {
-      resetMotion(p); p.sid = sid; p.input = B.RIGHT | B.SPRINT; p.aiDir = null;
+      resetMotion(p); p.x = 100; p.sid = sid; p.input = B.RIGHT | B.SPRINT; p.aiDir = null;
       for (let i = 0; i < 60; i++) updatePlayer(r, p);
       assert(Math.abs(p.vx - PACE.sprint) < 0.002, 'misma velocidad de sprint');
     }
@@ -1400,8 +1449,9 @@ function selfTest() {
     controlBall(r, p);
     checkSlides(r);
     if (angle === Math.PI) {
-      assert.strictEqual(r.state, 'setpiece', 'entrada por atrás es falta');
-      assert.strictEqual(r.sp.team, p.team);
+      assert.strictEqual(r.state, 'play', 'falta callejera sin pausa');
+      assert.strictEqual(r.sp, null);
+      assert.strictEqual(r.ball.owner, p, 'entrada por atrás devuelve posesión');
     } else {
       assert.strictEqual(def.slideClean, true, 'entrada de frente/costado debe funcionar');
       assert.strictEqual(r.ball.owner, null);
@@ -1433,8 +1483,87 @@ function selfTest() {
     assert.strictEqual(p.input & B.SPRINT, 0);
     rooms.delete(r.code);
   }
+  // 5i) Paredes: invierten solo la componente normal y frenan el efecto; salida alta sin pausa.
+  for (const pitch of [0, 2, 3, 4]) {
+    const r = newRoom('t', 3, 3, pitch);
+    startMatch(r); r.state = 'play'; r.sp = null;
+    for (const axis of ['x', 'y']) for (const side of [-1, 1]) {
+      const max = axis === 'x' ? W : H;
+      Object.assign(r.ball, { owner: null, x: W / 2, y: H / 4, z: 0, vx: 2, vy: 2, spin: 0.3 });
+      r.ball[axis] = side < 0 ? 1 : max - 1; r.ball['v' + axis] = side * 5;
+      checkGoalFrame(r, r.ball.x);
+      assert.strictEqual(r.ball['v' + axis], -side * 5 * PACE.wallBounce, 'rebote normal');
+      assert.strictEqual(r.ball[axis === 'x' ? 'vy' : 'vx'], 2, 'conserva tangente');
+      assert.strictEqual(r.ball.spin, 0.3 * PACE.wallSpin);
+    }
+    Object.assign(r.ball, { owner: null, x: CX, y: -10, z: PACE.wallH + 2, lastTeam: 0 });
+    checkGoalFrame(r, CX);
+    assert.strictEqual(r.state, 'play'); assert.strictEqual(r.sp, null);
+    const g = r.ball.owner;
+    assert(g && g.kind === 'gk' && g.team === 1, 'saca el arquero rival');
+    assert.strictEqual(g.stT, PACE.restartT);
+    for(let i=0;i<PACE.restartT;i++)updatePlayer(r,g);
+    assert.strictEqual(r.ball.owner, null, 'saca solo en medio segundo');
+    for(const p of r.players)p.sid='test'+p.id;
+    controlBall(r,g);g.st='hold';g.stT=HOLD_T;
+    const opp=r.players.find(p=>p.team!==g.team&&p.kind==='field');opp.x=g.team===0?W-PR:PR;opp.y=CY;
+    step(r);
+    assert(r.players.every(p=>p.x>=PR&&p.x<=W-PR&&p.y>=PR&&p.y<=H-PR),'el arquero no empuja a nadie fuera');
+    rooms.delete(r.code);
+  }
+  usePitch({ pitch: 0 });
+  // 5j) Pase normal contra cada pared: el que pateó puede controlar el rebote.
+  for(const [x,y,aim,input] of [[CX,40,-Math.PI/2,B.UP],[CX,H-40,Math.PI/2,B.DOWN],[40,H/4,Math.PI,B.LEFT],[W-40,H/4,0,B.RIGHT]]){
+    const r=newRoom('t',1,3);r.state='play';
+    const p=makePlayer(r,0,'field',cleanProfile({}),'a');r.players=[p];
+    Object.assign(p,{x,y,face:aim,input,pressed:B.PASS});controlBall(r,p);
+    withRandom(0.5,()=>updatePlayer(r,p));p.input=0;
+    const axis=input===B.UP||input===B.DOWN?'vy':'vx';let bounced=false;
+    for(let i=0;i<100&&!r.ball.owner;i++){
+      r.tick++;updatePlayer(r,p);const before=r.ball[axis];updateBall(r);
+      if(before*r.ball[axis]<0)bounced=true;checkTouches(r);
+      assert(p.x>=PR&&p.x<=W-PR&&p.y>=PR&&p.y<=H-PR,'no cruza paredes');
+    }
+    assert(bounced,'el pase normal rebota');assert.strictEqual(r.ball.owner,p,'recupera su propio pase');
+    assert.strictEqual(p.boostT,0,'sin impulso especial');assert.strictEqual(p.sprinting,false,'sin carrera automática');
+    assert(!r.events.some(e=>e.type==='skill'),'sin habilidad especial');rooms.delete(r.code);
+  }
+  // 5k) El rebote cancela el destinatario: lo disputa el pasador, un compañero o un rival.
+  for(const receiver of [0,1,2]){
+    const r=newRoom('t',2,3);r.state='play';
+    r.players=[0,0,1].map((team,i)=>makePlayer(r,team,'field',cleanProfile({}),'h'+i));
+    const [p,mate]=r.players;Object.assign(p,{x:CX,y:40,face:-Math.PI/2});
+    Object.assign(mate,{x:100,y:H-100});Object.assign(r.players[2],{x:150,y:H-100});controlBall(r,p);
+    withRandom(0.5,()=>doPass(r,p,-Math.PI/2,'auto'));
+    r.pass={to:mate.id,x:mate.x,y:mate.y,t:PACE.passT};
+    for(let i=0;i<20;i++){r.tick++;updatePlayer(r,p);updateBall(r);}
+    assert(r.ball.vy>0,'ya rebotó');assert.strictEqual(r.pass,null,'rebote sin receptor reservado');
+    for(const q of r.players){q.x=100;q.y=H-100;}
+    const q=r.players[receiver];q.x=r.ball.x;q.y=r.ball.y;checkTouches(r);
+    assert.strictEqual(r.ball.owner,q,'cualquiera puede controlar');rooms.delete(r.code);
+  }
+  // 5l) Apuntar a la pared respeta el stick, aunque haya un compañero a un costado.
+  {
+    const r=newRoom('t',2,3);r.state='play';
+    const p=makePlayer(r,0,'field',cleanProfile({}),'a'),mate=makePlayer(r,0,'field',cleanProfile({}),'b');r.players=[p,mate];
+    Object.assign(p,{x:250,y:40,face:-Math.PI/4,input:B.UP|B.RIGHT,pressed:B.PASS});Object.assign(mate,{x:400,y:20});controlBall(r,p);
+    withRandom(0.5,()=>updatePlayer(r,p));
+    assert.strictEqual(r.pass,null,'no desvía hacia el compañero');assert(Math.abs(r.ball.vx+r.ball.vy)<1e-9,'respeta la diagonal');
+    assert.strictEqual(r.ball.vz,0,'pase raso normal');rooms.delete(r.code);
+  }
+  // 5m) Correr y pasar sigue siendo un pase; otro toque sin pelota no la vuelve a patear a distancia.
+  for(const sprint of [0,B.SPRINT]){
+    const r=newRoom('t',2,3);r.state='play';
+    const p=makePlayer(r,0,'field',cleanProfile({}),'a'),mate=makePlayer(r,0,'field',cleanProfile({}),'b');r.players=[p,mate];
+    Object.assign(p,{x:250,y:CY,face:0,input:B.RIGHT|B.PASS|sprint,pressed:B.PASS});Object.assign(mate,{x:450,y:CY});controlBall(r,p);
+    withRandom(0.5,()=>updatePlayer(r,p));assert.strictEqual(r.pass.to,mate.id);assert.strictEqual(p.boostT,0);
+    for(let i=0;i<8;i++){r.tick++;updateBall(r);}
+    const vx=r.ball.vx,vy=r.ball.vy;p.pressed=B.PASS;updatePlayer(r,p);
+    assert.strictEqual(r.ball.vx,vx);assert.strictEqual(r.ball.vy,vy);assert.strictEqual(r.pass.to,mate.id);
+    rooms.delete(r.code);
+  }
   // 6) Partidos completos solo con bots: sin NaN y terminan.
-  for (const [mode, pitch] of [[1, 0], [2, 0], [3, 0], [4, 2], [6, 1], [10, 0]]) {
+  for (const [mode, pitch] of [[1, 0], [2, 0], [3, 0], [4, 2], [6, 1], [10, 0], [5, 3], [3, 4]]) {
     const r = newRoom('t', mode, 3, pitch);
     startMatch(r);
     const kinds = new Set();
