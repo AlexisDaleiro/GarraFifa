@@ -63,10 +63,9 @@
   function stepRun(s,bits,P){
     let x=(bits&8?1:0)-(bits&4?1:0),y=(bits&2?1:0)-(bits&1?1:0);const l=Math.hypot(x,y);if(l){x/=l;y/=l;}
     let speed=P.run;
-    if((bits&16)&&l&&!s.tired){speed=P.sprint;s.stamina-=.32;if(s.stamina<=0){s.stamina=0;s.tired=true;}}
-    else s.stamina=Math.min(100,s.stamina+(l?.1:.22));
-    if(s.tired){speed=P.tired;if(s.stamina>35)s.tired=false;}
-    if(s.ball)speed*=P.carry;if(s.boost)speed*=P.boost;if(s.charging)speed*=P.charge;
+    if((bits&16)&&l)speed=P.sprint;
+    s.stamina=100;s.tired=false;
+    if(s.ball)speed*=P.carry;if(s.boost)speed*=P.boost;
     if(l&&s.vx*x+s.vy*y<0&&Math.hypot(s.vx,s.vy)>P.reverseStop){s.vx*=P.reverseBrake;s.vy*=P.reverseBrake;}
     else{const acc=s.ball?P.ballAcc:P.acc;s.vx+=(x*speed-s.vx)*acc;s.vy+=(y*speed-s.vy)*acc;}
     if(l){const r=s.ball?P.ballTurn:P.turn,f=s.face+clamp(angle(s.face,Math.atan2(y,x)),-r,r);s.face=Math.atan2(Math.sin(f),Math.cos(f));}

@@ -394,6 +394,17 @@
     if(options.fx?.goal){applyCelebration(actor,p,options);return;}
     if(!f){
       const tick=options.fx?.tick||0,shot=options.fx?.shot;
+      if(actor.skillState!==p.st){actor.skillState=p.st;actor.skillAt=tick;}
+      if(p.st==='croq'||p.st==='step'){
+        const duration=actor.info.pace?.[p.st==='croq'?'croqT':'stepT']||(p.st==='croq'?22:30);
+        const t=clamp((tick-actor.skillAt)/duration,0,1),w=Math.sin(t*Math.PI),cycle=t*Math.PI*2;
+        m.rotation.z=Math.sin(cycle)*.13*w;
+        bend(actor,'upperarm_l',0,-.3*w);bend(actor,'upperarm_r',0,.3*w);
+        if(p.st==='step'){
+          poseBend(actor,'thigh_l',-.6*Math.sin(cycle)*w,0,.5*Math.cos(cycle)*w);
+          bend(actor,'calf_l',.5*(1+Math.sin(cycle))*w);
+        }else{poseBend(actor,'thigh_r',-.25*w,0,-.45*w);bend(actor,'calf_r',.3*w);}
+      }
       const jump=p.st==='rainbow'?Math.sin((p.stT||0)*.15)*3:shot?Math.sin(clamp((tick-shot.tick)/25,0,1)*Math.PI)*3:0;
       const sy=1+Math.max(0,jump)*.06;m.position.y=Math.max(0,jump);m.scale.set(1/Math.sqrt(sy),sy,1/Math.sqrt(sy));
       applyReaction(actor,p,options);

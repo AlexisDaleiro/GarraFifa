@@ -14,7 +14,7 @@
 <!-- MENÚ -->
 <section id="menu" class="screen active">
   <h1 class="logo">GARRA<span>FC</span></h1>
-  <p class="tagline">Fútbol callejero · pases y paredes · 3 botones</p>
+  <p class="tagline">Fútbol callejero · pases, paredes y regates · PC</p>
   <div class="card menu-card">
     <label class="field">Tu nombre
       <input id="name" maxlength="12" autocomplete="off" placeholder="Crack">
@@ -55,9 +55,9 @@
       <p class="hint">Jugá con el celular o la tablet en horizontal.</p>
       <ul>
         <li><b class="tk">Joystick</b> (abajo a la izquierda) Mover</li>
-        <li><b class="tk">PASE</b> Pasala: el juego elige raso, al hueco o bombeado</li>
-        <li><b class="tk">TIRO</b> Mantener para más potencia</li>
-        <li><b class="tk">SPRINT</b> Correr (gasta Garra)</li>
+        <li><b class="tk">PASE</b> Pase manual en la dirección elegida</li>
+        <li><b class="tk">TIRO</b> Tiro inmediato</li>
+        <li><b class="tk">SPRINT</b> Correr</li>
         <li>Apuntá a la pared y usá <b class="tk">PASE</b> para jugar con el rebote</li>
         <li>Si la tiene el rival, <b class="tk">PASE</b> se vuelve <b class="tk">BARRIDA</b></li>
         <li>Si la tiene un compañero, <b class="tk">PASE</b> la pide</li>
@@ -68,9 +68,10 @@
     <h3>Controles</h3>
     <ul>
       <li><kbd>←↑↓→</kbd> Mover</li>
-      <li><kbd>S</kbd> Pase: el juego elige raso, al hueco o bombeado</li>
-      <li><kbd>D</kbd> Tiro: mantener para más potencia</li>
-      <li><kbd>Espacio</kbd> Sprint (gasta Garra)</li>
+      <li><kbd>S</kbd> Pase manual: apuntá con las flechas</li>
+      <li><kbd>D</kbd> Tiro inmediato en la dirección elegida</li>
+      <li><kbd>Q / E</kbd> Croqueta / bicicleta</li>
+        <li><kbd>Espacio</kbd> Sprint</li>
       <li>Apuntá a la pared y usá <kbd>S</kbd> para jugar con el rebote</li>
       <li>Si la tiene el rival, <kbd>S</kbd> es barrida</li>
       <li>Si la tiene un compañero, <kbd>S</kbd> la pide</li>
@@ -90,6 +91,7 @@
   <div class="lobby-grid">
     <div id="teamCard0" class="team-card red">
       <h2 id="teamName0">LOCAL</h2>
+      <p id="teamStyle0" class="team-style"></p>
       <ul id="list0" class="team-list"></ul>
       <button class="btn joinTeam" data-team="0">Jugar en Rojo</button>
     </div>
@@ -99,6 +101,13 @@
       <div class="custom-fields">
         <label class="field">Dorsal <input id="num" type="number" min="1" max="99" value="10"></label>
       </div>
+      <label class="field">Perfil de juego <select id="archetype"></select></label>
+      <section class="player-profile" aria-label="Estadísticas del jugador">
+        <h4 id="profileName"></h4>
+        <dl id="profileStats" class="profile-stats"></dl>
+        <ul id="profileTraits" class="profile-traits"></ul>
+        <small>Perfiles ficticios · 50 neutral · efectos hasta ±10 %</small>
+      </section>
       <div class="host-settings">
         <label class="field">Local <select id="teamSel0"></select></label>
         <label class="field">Visitante <select id="teamSel1"></select></label>
@@ -123,6 +132,7 @@
     </div>
     <div id="teamCard1" class="team-card blue">
       <h2 id="teamName1">VISITANTE</h2>
+      <p id="teamStyle1" class="team-style"></p>
       <ul id="list1" class="team-list"></ul>
       <button class="btn joinTeam" data-team="1">Jugar en Azul</button>
     </div>
@@ -140,29 +150,19 @@
     <span id="tn1" class="tname blue">VIS</span>
   </div>
   <div class="code-tag">SALA <b id="hudCode">----</b> · <kbd>Esc</kbd> menú · <kbd>H</kbd> ayuda · <kbd>M</kbd> sonido</div>
-  <div class="bars">
-    <div class="bar">
-      <span>GARRA</span>
-      <div class="track"><div id="stamFill" class="fill stam"></div></div>
-    </div>
-    <div class="bar">
-      <span>POTENCIA</span>
-      <div class="track power"><div id="powFill" class="fill pow"></div><i class="mark m1"></i><i class="mark m2"></i><i class="mark m3"></i></div>
-    </div>
-  </div>
   <canvas id="radar" width="200" height="128" aria-label="Radar"></canvas>
   <div id="banner" class="banner"><b></b><small></small></div>
   <div id="replayTag" class="replay-tag">● REPETICIÓN</div>
   <div id="help" class="help card">
     <div class="only-touch">
       <b>Controles táctiles</b>
-      <p>Joystick mover · PASE · TIRO (mantener) · SPRINT</p>
+      <p>Joystick mover · PASE · TIRO · SPRINT</p>
       <p>Apuntá a la pared y pasá: cualquiera puede agarrar el rebote. Rival con la pelota: PASE = BARRIDA. Compañero: pedirla.</p>
       <p>Tocá <b>Controles</b> otra vez en el menú para cerrar.</p>
     </div>
     <div class="only-keys">
     <b>Controles</b>
-    <p>←↑↓→ mover · S pase · D tiro (mantener) · Espacio sprint</p>
+    <p>←↑↓→ mover · S pase · D tiro · Espacio sprint · Q croqueta · E bicicleta</p>
     <p>Apuntá a la pared y pasá con S. Cualquiera puede agarrar el rebote, incluido el que pateó.</p>
     <p>Rival con la pelota: S barrida. Compañero con la pelota: S la pide. Si el pase ya viene hacia vos, S o D le pegan de primera.</p>
     </div>
@@ -208,6 +208,7 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="teams.js"></script>
+<script src="attributes.js"></script>
 <script src="pitches.js"></script>
 <script src="locomotion.js"></script>
 <script type="importmap">

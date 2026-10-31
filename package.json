@@ -6,8 +6,9 @@
   "scripts": {
     "start": "node server.js",
     "test:rig": "node tools/verify_player_assets.mjs",
+    "test:players": "node tests/attributes-network.test.js",
     "test:net": "node tools/measure-network.js",
-    "test": "node tests/locomotion.test.js && node tests/continuity.test.js && node tests/player3d.test.js && node tests/toon-fx.test.js && node server.js --selftest"
+    "test": "node tests/attributes.test.js && node tests/locomotion.test.js && node tests/continuity.test.js && node tests/player3d.test.js && node tests/toon-fx.test.js && node server.js --selftest"
   },
   "engines": {
     "node": ">=18"
