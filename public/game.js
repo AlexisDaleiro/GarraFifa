@@ -227,13 +227,30 @@
     if (snaps.length > 600) snaps.splice(0, snaps.length - 600);
     if (s.s !== lastState) {
       if (lastState === 'goal') stopReplay();
-      lastState = s.s;
+      lastState = s.s; stateTick = s.t;
     }
     updateHud(s);
   }
-  // Diagnóstico optativo: ?latency=100&jitter=30, sólo retrasa recepción local.
-  const netParams=new URLSearchParams(location.search),testLatency=clamp(+netParams.get('latency')||0,0,500),testJitter=clamp(+netParams.get('jitter')||0,0,100);
-  socket.on('s',s=>{const epoch=networkEpoch;if(testLatency||testJitter)setTimeout(()=>{if(epoch===networkEpoch)receiveSnapshot(s);},Math.max(0,testLatency+Math.sin(s.t*1.7)*testJitter));else receiveSnapshot(s);});
+  // Diagnóstico optativo: ?latency=100&jitter=30 retrasa la recepción local; ?stall=250 la frena cada ~2 s y
+  // entrega todo junto (como un celular con wifi flojo). ?netdiag=1 resume la red en consola cada 5 s.
+  const netParams=new URLSearchParams(location.search),testLatency=clamp(+netParams.get('latency')||0,0,500),testJitter=clamp(+netParams.get('jitter')||0,0,100),testStall=clamp(+netParams.get('stall')||0,0,1000);
+  let stateTick=0,stallUntil=0;const held=[];
+  // Cola en orden como TCP: un snapshot demorado nunca queda detrás de uno posterior.
+  const drain=()=>{const now=performance.now();while(held.length&&held[0].due<=now){const h=held.shift();if(h.epoch===networkEpoch)receiveSnapshot(h.s);}if(held.length)setTimeout(drain,held[0].due-now);};
+  socket.on('s',s=>{
+    const now=performance.now();
+    if(testStall&&now%2000<testStall)stallUntil=Math.max(stallUntil,now-now%2000+testStall);
+    const wait=Math.max(testLatency+Math.sin(s.t*1.7)*testJitter,stallUntil-now,0);
+    if(!wait&&!held.length)return receiveSnapshot(s);
+    held.push({s,epoch:networkEpoch,due:Math.max(now+wait,held.length?held[held.length-1].due:0)});
+    if(held.length===1)setTimeout(drain,wait);
+  });
+  const netDiag=netParams.has('netdiag')?{frames:0,playJumps:0,setJumps:0,resumeJumps:0,maxPlayStep:0}:null;
+  if(netDiag)setInterval(()=>{
+    if(!inGame())return;const c=netClock.takeStats();
+    console.info('[netdiag]',JSON.stringify({...netDiag,maxPlayStep:+netDiag.maxPlayStep.toFixed(1),packets:c.packets,stale:c.stale,maxArrivalMs:Math.round(c.maxArrival),maxTickGap:c.maxTickGap,bufferMs:Math.round(netClock.delay*TICK_MS),minDepthTicks:+c.minDepth.toFixed(1),holdFrames:c.holds,resumes:c.resumes,transport:socket.io.engine&&socket.io.engine.transport.name}));
+    Object.assign(netDiag,{frames:0,playJumps:0,setJumps:0,resumeJumps:0,maxPlayStep:0});
+  },5000);
 
   // ---------- Menú y lobby ----------
   $('name').value = profile.name;
@@ -1117,7 +1134,12 @@
       else view = sample(replay.buf, replay.t);
     }
     if (!view) view = sample(snaps, liveTick);
-    if(view){const shown=presentation.update(view,dt/60);if(shown.discontinuity)transitionScene();render(shown,dt);}
+    if(view){
+      const shown=presentation.update(view,dt/60);if(shown.discontinuity)transitionScene();
+      // Saltos legítimos (saque, gol, vuelta de segundo plano) aparte de los que ocurren en juego continuo.
+      if(netDiag&&!replay){const play=!netClock.resumed&&shown.state==='play'&&shown.t-stateTick>90;netDiag.frames++;if(shown.discontinuity)netDiag[netClock.resumed?'resumeJumps':play?'playJumps':'setJumps']++;if(play)netDiag.maxPlayStep=Math.max(netDiag.maxPlayStep,shown.maxStep);}
+      render(shown,dt);
+    }
   }
   requestAnimationFrame(frame);
   drawKit();

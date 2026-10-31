@@ -50,6 +50,47 @@ assert(lastX>1400,'el reloj progresa');
   if(last!==null&&now>6000){const st=x-last;if(st<.5)frozen++;if(st>3.5)fast++;}last=x;
  }
  assert(frozen===0&&fast===0,`cortes de red: ${frozen} frames trabados, ${fast} acelerados`);}
+// Red irregular determinista (TCP: en orden) contra reloj+muestreo+presentación reales. Un jugador en zigzag a
+// 4.5 u/tick; "salto" = paso de un frame mayor que 1.6 veces lo que puede moverse.
+const zig=t=>{const seg=Math.floor(t/50),f=t-seg*50;let x=0;for(let i=0;i<seg;i++)x+=(i%2?-1:1)*225;return {x:200+x+(seg%2?-1:1)*f*4.5,y:300+t*.5};};
+const rnd=seed=>()=>{seed=(seed+0x6D2B79F5)>>>0;let t=seed;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return((t^t>>>14)>>>0)/4294967296;};
+function simulate({lat=40,jit=()=>0,stall=()=>null,frame=()=>1000/60,hidden=[0,0],dur=30000}){
+  const r=rnd(7),fr=rnd(11),del=[];let lastAt=0;
+  for(let t=0;t*C.TICK<dur;t+=2){const send=t*C.TICK,p=zig(t);let at=Math.max(send+lat+jit(r),stall(send)??0,lastAt);lastAt=at;del.push({s:{t,s:'play',o:0,p:[[1,p.x,p.y,0,0,100,0,0]],b:[p.x,p.y,0]},at});}
+  const clock=C.createClock(),samp=C.createSampler(),pres=C.createPresenter(),buf=[];
+  let next=0,now=0,last=null,jumps=0,maxErr=0,resumes=0,delay=0,n=0;
+  while(now<dur){
+    const dt=frame(fr);now+=dt;
+    while(next<del.length&&del[next].at<=now){const d=del[next++];if(clock.receive(d.s.t,d.at))buf.push(d.s);}
+    if(now>hidden[0]&&now<hidden[1])continue;
+    const t=clock.advance(now);if(t===null)continue;if(clock.resumed)resumes++;
+    const p=pres.update(samp.sample(buf,t),dt/1000).players[0],settled=now>3000&&!(now>=hidden[1]&&now<hidden[1]+400);
+    if(settled){if(last&&Math.hypot(p.x-last.x,p.y-last.y)>4.6*dt/C.TICK*1.6+1.5)jumps++;const z=zig(t);maxErr=Math.max(maxErr,Math.hypot(p.x-z.x,p.y-z.y));delay+=now-t*C.TICK;n++;}
+    last={x:p.x,y:p.y};
+  }
+  return {jumps,maxErr,resumes,delay:delay/n};
+}
+const expo=m=>r=>-Math.log(1-r())*m;
+const pauses=(seed,every)=>{const r=rnd(seed),list=[];for(let t=2000;t<40000;t+=every*(.6+r()*.8))list.push([t,t+100+r()*200]);return s=>{for(const [a,b] of list)if(s>=a&&s<b)return b;return null;};};
+{const cases=[
+  ['latencia 180 ms',{lat:180},6,0],
+  ['jitter exponencial 50 ms',{lat:80,jit:expo(50)},12,0],
+  ['pausas 100-300 ms y ráfaga',{lat:60,jit:expo(10),stall:pauses(3,2000)},10,0],
+  ['celular a 18 fps',{lat:70,jit:expo(30),frame:()=>55},14,0],
+  ['celular con tirones, jitter y pausas',{lat:70,jit:expo(30),stall:pauses(5,3000),frame:r=>r()<.05?80+r()*60:20},12,0],
+  ['un segundo sin snapshots',{lat:60,stall:s=>s>=10000&&s<11000?11000:null},10,0],
+  ['vuelta desde segundo plano',{lat:60,jit:expo(15),hidden:[10000,15000]},Infinity,1],
+ ];
+ for(const [name,opts,err,resumes] of cases){
+  const r=simulate(opts);
+  assert.equal(r.jumps,0,`${name}: ${r.jumps} saltos`);
+  assert(r.maxErr<err,`${name}: error ${r.maxErr.toFixed(1)}`);
+  assert.equal(r.resumes,resumes,`${name}: ${r.resumes} reinicios del reloj`);
+ }
+ // El reloj no pierde tiempo con frames largos: antes un celular a 18 fps acumulaba ~470 ms de retraso.
+ assert(simulate({lat:70,jit:expo(30),frame:()=>55}).delay<300,'retraso de presentación acotado a 18 fps');
+ // Reconexión: reset y nuevo origen de ticks arrancan limpio.
+ const c=C.createClock();c.receive(5000,1000);c.advance(1000);c.reset();assert(c.receive(10,2000));assert(c.advance(2000)<=10);}
 const camera=C.createCamera(),person={x:850,y:500};let cx=camera.x,cy=camera.y;
 for(let i=0;i<240;i++){
  const c=camera.update(i<120?900:30,200,i<80?person:null,i>160,i<100?500:1200,i<100?460:300,1/60);

@@ -12,12 +12,16 @@
     // offset: llegada más temprana vista (los paquetes demorados no la mueven; sube despacio si la ruta empeora).
     // late: pico de demora sobre esa base, decae lento. delay (buffer) cubre ese pico: crece rápido, baja despacio,
     // así cortes y ráfagas (wifi, celular, long-polling) no traban ni aceleran la imagen.
-    const c={offset:null,late:0,jitter:0,delay:4,cursor:null,lastTick:-Infinity,lastArrival:0,lastFrame:null,resumed:false};
+    // stats: contadores baratos para el diagnóstico optativo (?netdiag=1); nadie los lee si está apagado.
+    const c={offset:null,late:0,jitter:0,delay:4,cursor:null,lastTick:-Infinity,lastArrival:0,lastFrame:null,resumed:false,stats:null};
+    const fresh=()=>({packets:0,stale:0,maxArrival:0,maxTickGap:0,holds:0,resumes:0,minDepth:Infinity});
+    c.stats=fresh();c.takeStats=()=>{const s=c.stats;c.stats=fresh();return s;};
     c.receive=(tick,now)=>{
-      if(tick<=c.lastTick)return false;
-      const off=now/TICK-tick;
+      if(tick<=c.lastTick){c.stats.stale++;return false;}
+      const off=now/TICK-tick;c.stats.packets++;
       if(c.offset===null)c.offset=off;
       else{
+        c.stats.maxArrival=Math.max(c.stats.maxArrival,now-c.lastArrival);c.stats.maxTickGap=Math.max(c.stats.maxTickGap,tick-c.lastTick);
         const gap=Math.min(250,now-c.lastArrival),error=Math.abs((now-c.lastArrival)/TICK-(tick-c.lastTick));
         c.jitter+=(Math.min(error,12)-c.jitter)*.08;
         c.offset=Math.min(off,c.offset+gap/TICK*.01);
@@ -30,9 +34,18 @@
     c.advance=now=>{
       if(c.offset===null)return null;
       const target=now/TICK-c.offset-c.delay,gap=c.lastFrame===null?0:now-c.lastFrame;
-      c.resumed=gap>250||(c.cursor!==null&&Math.abs(target-c.cursor)>40);
-      if(c.cursor===null||c.resumed)c.cursor=target;
-      else c.cursor+=Math.min(50,Math.max(0,gap))/TICK*(1+clamp((target-c.cursor)*.05,-.08,.08));
+      // Mientras falten datos no se reinicia: saltar al objetivo sería saltar a donde todavía no hay snapshots.
+      c.resumed=gap>250||(c.cursor!==null&&c.cursor<=c.lastTick&&Math.abs(target-c.cursor)>40);
+      if(c.cursor===null||c.resumed){c.cursor=Math.min(target,c.lastTick);if(c.lastFrame!==null)c.stats.resumes++;}
+      else{
+        // Se avanza el tiempo real del frame (un celular a 20 fps no se atrasa) con corrección de ±8%.
+        // Si faltan snapshots el reloj frena suave antes del último recibido: los jugadores aminoran en vez de
+        // extrapolar, quedarse quietos y saltar cuando llega la ráfaga.
+        let rate=1+clamp((target-c.cursor)*.05,-.08,.08);const ahead=c.lastTick-c.cursor;
+        if(ahead<2){rate*=clamp((ahead+1)/3);c.stats.holds++;}
+        c.cursor=Math.min(c.cursor+Math.max(0,gap)/TICK*rate,Math.max(c.cursor,c.lastTick+1));
+      }
+      c.stats.minDepth=Math.min(c.stats.minDepth,c.lastTick-c.cursor);
       c.lastFrame=now;return c.cursor;
     };
     c.reset=()=>{c.offset=c.cursor=c.lastFrame=null;c.late=c.jitter=0;c.delay=4;c.lastTick=-Infinity;c.lastArrival=0;};
